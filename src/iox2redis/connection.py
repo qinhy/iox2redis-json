@@ -8,27 +8,13 @@ from typing import Any
 from .codec import CodecError, decode_response, encode_command, response_to_redis_value
 from .transport import Iox2RpcClient, service_name_from_host
 
-try:
-    import redis
-    from redis.connection import Connection
-    from redis.exceptions import ConnectionError as RedisConnectionError
-    from redis.exceptions import ResponseError
-    from redis.exceptions import TimeoutError as RedisTimeoutError
-except ImportError:  # pragma: no cover - redis-py is a project dependency
-    redis = None
-    Connection = object  # type: ignore[assignment,misc]
+import redis
+from redis.connection import Connection
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import ResponseError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
-    class ResponseError(Exception):
-        pass
-
-    class RedisTimeoutError(Exception):
-        pass
-
-    class RedisConnectionError(Exception):
-        pass
-
-
-class Iox2Connection(Connection):  # type: ignore[misc]
+class Iox2Connection(Connection):
     """A redis-py connection that sends commands over iceoryx2 request-response.
 
     Only a small command subset is supported by the matching demo server. The
@@ -69,7 +55,7 @@ class Iox2Connection(Connection):  # type: ignore[misc]
     def repr_pieces(self):
         return [("iox2_service", f"/{self.service_name}/"), ("db", self.db)]
 
-    def connect(self):
+    def connect(self) -> None:
         if self.is_connected:
             return
         self._transport = Iox2RpcClient(
@@ -81,7 +67,7 @@ class Iox2Connection(Connection):  # type: ignore[misc]
         )
         self._transport.open()
 
-    def disconnect(self, *args, **kwargs):  # noqa: ARG002 - redis-py signature compatibility
+    def disconnect(self, *args, **kwargs) -> None:  # noqa: ARG002 - redis-py signature compatibility
         if self._transport is not None:
             self._transport.close()
         self._transport = None
