@@ -27,7 +27,7 @@ def _import_redis() -> Any:
 class JsonHelpersMixin:
     """Small convenience helpers on top of Redis-like commands."""
 
-    def execute_command(self, *args: Any) -> Any:
+    def execute_command(self, *args: Any, **options: Any) -> Any:
         raise NotImplementedError
 
     def set_json(self, key: str, value: Any, *, nx: bool = False, xx: bool = False) -> Any:
@@ -47,8 +47,9 @@ class JsonHelpersMixin:
             raw = raw.decode("utf-8")
         return json.loads(raw)
 
-    def json_set(self, key: str, path: str, value: Any,
-                 *, nx: bool = False, xx: bool = False) -> Any:
+    def json_set(
+        self, key: str, path: str, value: Any, *, nx: bool = False, xx: bool = False
+    ) -> Any:
         options: list[str] = []
         if nx:
             options.append("NX")
@@ -136,8 +137,9 @@ def _client_class() -> type[Any]:
     RedisBase: Any = _import_redis().Redis
 
     class Iox2Redis(JsonHelpersMixin, RedisBase):  # type: ignore[misc]
-        pass
-
+       def execute_command(self, *args: Any, **options: Any) -> Any:
+           return RedisBase.execute_command(self, *args, **options)
+       
     return Iox2Redis
 
 
