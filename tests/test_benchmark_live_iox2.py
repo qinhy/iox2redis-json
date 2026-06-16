@@ -64,18 +64,12 @@ def iox2redis_host(request: pytest.FixtureRequest) -> Iterator[str]:
             try:
                 server_exc = errors.get_nowait()
             except queue.Empty:
-                reason = (
-                    "iox2redis server started, but PING failed in the client: "
-                    f"{client_exc!r}"
-                )
+                reason = f"iox2redis server started, but PING failed in the client: {client_exc!r}"
             else:
-                reason = (
-                    f"client error: {client_exc!r}; "
-                    f"server error: {server_exc!r}"
-                )
+                reason = f"client error: {client_exc!r}; server error: {server_exc!r}"
 
             _skip_or_fail(reason, request)
-            
+
         yield raw_host
 
     finally:

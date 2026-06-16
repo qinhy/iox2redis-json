@@ -137,9 +137,9 @@ def _client_class() -> type[Any]:
     RedisBase: Any = _import_redis().Redis
 
     class Iox2Redis(JsonHelpersMixin, RedisBase):  # type: ignore[misc]
-       def execute_command(self, *args: Any, **options: Any) -> Any:
-           return RedisBase.execute_command(self, *args, **options)
-       
+        def execute_command(self, *args: Any, **options: Any) -> Any:
+            return RedisBase.execute_command(self, *args, **options)
+
     return Iox2Redis
 
 
