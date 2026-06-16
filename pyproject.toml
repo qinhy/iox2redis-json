@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [
-  { name = "Your Name" }
+  { name = "HUANGYI QIN" }
 ]
 keywords = ["redis", "redis-py", "iceoryx2", "ipc", "json"]
 classifiers = [
