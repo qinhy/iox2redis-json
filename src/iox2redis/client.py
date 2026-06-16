@@ -107,6 +107,12 @@ class Iox2DirectClient:
             raise CodecError(f"GET returned non-bytes value: {type(value).__name__}")
         return value
 
+    def keys(self, pattern: bytes | str = "*") -> list[bytes]:
+        value = self.execute_command("KEYS", pattern)
+        if not isinstance(value, list) or any(not isinstance(key, bytes) for key in value):
+            raise CodecError("KEYS returned an invalid response")
+        return value
+
     def set_json_bytes(self, key: bytes | str, json_bytes: bytes) -> bool:
         return bool(self.execute_command("JSON.SET", key, "$", json_bytes) == b"OK")
 

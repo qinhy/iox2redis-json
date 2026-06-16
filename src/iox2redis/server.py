@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import signal
 import time
 from collections.abc import Callable
@@ -29,6 +30,72 @@ class StoredValue:
     value: Any
     expires_at: float | None = None
     is_json: bool = False
+
+
+def _compile_redis_glob(pattern: str) -> re.Pattern[str]:
+    """Compile Redis-style glob syntax into a case-sensitive regex."""
+
+    parts = [r"\A"]
+    idx = 0
+    while idx < len(pattern):
+        char = pattern[idx]
+        if char == "*":
+            parts.append(".*")
+            idx += 1
+            continue
+        if char == "?":
+            parts.append(".")
+            idx += 1
+            continue
+        if char == "\\":
+            idx += 1
+            if idx < len(pattern):
+                parts.append(re.escape(pattern[idx]))
+                idx += 1
+            else:
+                parts.append(re.escape("\\"))
+            continue
+        if char != "[":
+            parts.append(re.escape(char))
+            idx += 1
+            continue
+
+        end = idx + 1
+        negated = False
+        if end < len(pattern) and pattern[end] in {"^", "!"}:
+            negated = True
+            end += 1
+
+        class_parts: list[str] = []
+        if end < len(pattern) and pattern[end] == "]":
+            class_parts.append(r"\]")
+            end += 1
+
+        closed = False
+        while end < len(pattern):
+            class_char = pattern[end]
+            if class_char == "]":
+                closed = True
+                break
+            if class_char == "\\" and end + 1 < len(pattern):
+                end += 1
+                class_parts.append(re.escape(pattern[end]))
+            elif class_char == "-":
+                class_parts.append("-")
+            else:
+                class_parts.append(re.escape(class_char))
+            end += 1
+
+        if not closed or not class_parts:
+            parts.append(r"\[")
+            idx += 1
+            continue
+
+        parts.append("[" + ("^" if negated else "") + "".join(class_parts) + "]")
+        idx = end + 1
+
+    parts.append(r"\Z")
+    return re.compile("".join(parts), re.DOTALL)
 
 
 class JsonStore:
@@ -63,6 +130,8 @@ class JsonStore:
             return self._exists(args)
         if cmd == "MGET":
             return self._mget(args)
+        if cmd == "KEYS":
+            return self._keys(args)
         if cmd == "JSON.SET":
             return self._json_set(args)
         if cmd == "JSON.GET":
@@ -172,6 +241,21 @@ class JsonStore:
             else:
                 values.append(item.value)
         return ResponseFrame("array", values)
+
+    def _keys(self, args: list[Any]) -> ResponseFrame:
+        if len(args) != 1:
+            return ResponseFrame("error", message="ERR wrong number of arguments for KEYS")
+
+        pattern = key_to_str(args[0])
+        matcher = _compile_redis_glob(pattern)
+
+        # KEYS must not expose entries that have expired but have not yet been
+        # touched by another command. Iterate over a snapshot because purging
+        # mutates the backing dictionary.
+        for key in list(self._items):
+            self._purge_if_expired(key)
+
+        return ResponseFrame("array", [key for key in self._items if matcher.fullmatch(key)])
 
     def _json_set(self, args: list[Any]) -> ResponseFrame:
         if len(args) < 3:
