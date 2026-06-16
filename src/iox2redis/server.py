@@ -6,8 +6,9 @@ import argparse
 import json
 import signal
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .codec import (
     CodecError,
@@ -18,6 +19,9 @@ from .codec import (
     key_to_str,
     value_to_json_text,
 )
+
+if TYPE_CHECKING:
+    from .transport import Iox2RpcServer
 
 
 @dataclass
@@ -30,7 +34,7 @@ class StoredValue:
 class JsonStore:
     """Small Redis-like in-memory store used by the demo server."""
 
-    def __init__(self, clock=time.monotonic):
+    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
         self._items: dict[str, StoredValue] = {}
         self._clock = clock
 
@@ -235,13 +239,13 @@ class Iox2JsonServer:
         poll_ns: int | None = None,
         poll_ms: int | None = None,
         store: JsonStore | None = None,
-    ):
+    ) -> None:
         self.service_name = service_name.strip("/")
         self.max_payload_size = max_payload_size
         self.poll_ns = poll_ns
         self.poll_ms = poll_ms
         self.store = store or JsonStore()
-        self._transport = None
+        self._transport: Iox2RpcServer | None = None
         self._closed = False
 
     def open(self) -> None:
@@ -301,7 +305,7 @@ def main(argv: list[str] | None = None) -> int:
         poll_ms=args.poll_ms,
     )
 
-    def _stop(_signum, _frame):
+    def _stop(_signum: int, _frame: Any) -> None:
         server.close()
 
     signal.signal(signal.SIGINT, _stop)

@@ -14,7 +14,7 @@ def is_iox2_host(host: str | None) -> bool:
     return isinstance(host, str) and (host.startswith("/") or host.startswith("iox2://"))
 
 
-def _import_redis():
+def _import_redis() -> Any:
     try:
         import redis
     except ImportError as exc:  # pragma: no cover - project dependency
@@ -27,8 +27,11 @@ def _import_redis():
 class JsonHelpersMixin:
     """Small convenience helpers on top of Redis-like commands."""
 
-    def set_json(self, key: str, value: Any, *, nx: bool = False, xx: bool = False):
-        options = []
+    def execute_command(self, *args: Any) -> Any:
+        raise NotImplementedError
+
+    def set_json(self, key: str, value: Any, *, nx: bool = False, xx: bool = False) -> Any:
+        options: list[str] = []
         if nx:
             options.append("NX")
         if xx:
@@ -36,7 +39,7 @@ class JsonHelpersMixin:
         payload = json.dumps(value, separators=(",", ":"), ensure_ascii=False)
         return self.execute_command("JSON.SET", key, "$", payload, *options)
 
-    def get_json(self, key: str):
+    def get_json(self, key: str) -> Any:
         raw = self.execute_command("JSON.GET", key, "$")
         if raw is None:
             return None
@@ -44,8 +47,9 @@ class JsonHelpersMixin:
             raw = raw.decode("utf-8")
         return json.loads(raw)
 
-    def json_set(self, key: str, path: str, value: Any, *, nx: bool = False, xx: bool = False):
-        options = []
+    def json_set(self, key: str, path: str, value: Any,
+                 *, nx: bool = False, xx: bool = False) -> Any:
+        options: list[str] = []
         if nx:
             options.append("NX")
         if xx:
@@ -53,7 +57,7 @@ class JsonHelpersMixin:
         payload = json.dumps(value, separators=(",", ":"), ensure_ascii=False)
         return self.execute_command("JSON.SET", key, path, payload, *options)
 
-    def json_get(self, key: str, path: str = "$"):
+    def json_get(self, key: str, path: str = "$") -> Any:
         raw = self.execute_command("JSON.GET", key, path)
         if raw is None:
             return None
@@ -73,7 +77,7 @@ class Iox2DirectClient:
         max_payload_size: int = 64 * 1024,
         poll_ns: int | None = None,
         poll_ms: int | None = None,
-    ):
+    ) -> None:
         self.service_name = service_name_from_host(host)
         self._transport = Iox2RpcClient(
             self.service_name,
@@ -91,10 +95,10 @@ class Iox2DirectClient:
         return response_to_redis_value(response)
 
     def ping(self) -> bool:
-        return self.execute_command("PING") == b"PONG"
+        return bool(self.execute_command("PING") == b"PONG")
 
     def set_bytes(self, key: bytes | str, value: bytes) -> bool:
-        return self.execute_command("SET", key, value) == b"OK"
+        return bool(self.execute_command("SET", key, value) == b"OK")
 
     def get_bytes(self, key: bytes | str) -> bytes | None:
         value = self.execute_command("GET", key)
@@ -103,7 +107,7 @@ class Iox2DirectClient:
         return value
 
     def set_json_bytes(self, key: bytes | str, json_bytes: bytes) -> bool:
-        return self.execute_command("JSON.SET", key, "$", json_bytes) == b"OK"
+        return bool(self.execute_command("JSON.SET", key, "$", json_bytes) == b"OK")
 
     def get_json_bytes(self, key: bytes | str) -> bytes | None:
         value = self.execute_command("JSON.GET", key, "$")
@@ -128,10 +132,10 @@ class Iox2DirectClient:
         self.close()
 
 
-def _client_class():
-    redis = _import_redis()
+def _client_class() -> type[Any]:
+    RedisBase: Any = _import_redis().Redis
 
-    class Iox2Redis(JsonHelpersMixin, redis.Redis):
+    class Iox2Redis(JsonHelpersMixin, RedisBase):  # type: ignore[misc]
         pass
 
     return Iox2Redis
@@ -165,7 +169,7 @@ def redis_for(
     poll_ns: int | None = None,
     poll_ms: int | None = None,
     **kwargs: Any,
-):
+) -> Any:
     """Create a Redis client.
 
     If host starts with `/` or `iox2://`, returns a redis-py client using the

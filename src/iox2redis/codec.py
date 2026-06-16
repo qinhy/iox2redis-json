@@ -336,7 +336,7 @@ def response_to_redis_value(frame: ResponseFrame) -> Any:
     if frame.kind == "integer":
         return int(frame.value)
     if frame.kind == "array":
-        out = []
+        out: list[Any] = []
         for item in frame.value:
             if item is None:
                 out.append(None)

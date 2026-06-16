@@ -6,6 +6,7 @@ import ctypes
 import os
 import time
 from collections.abc import Callable
+from typing import Any
 
 DEFAULT_POLL_NS = 100_000
 
@@ -22,9 +23,9 @@ def service_name_from_host(host: str) -> str:
     return host.strip("/")
 
 
-def _import_iox2():
+def _import_iox2() -> Any:
     try:
-        import iceoryx2 as iox2  # type: ignore[import-not-found]
+        import iceoryx2 as iox2  # type: ignore[import-untyped]
     except ImportError as exc:  # pragma: no cover - depends on optional runtime
         raise Iox2Unavailable(
             "iceoryx2 is required for IPC transport. Install with: "
@@ -33,7 +34,7 @@ def _import_iox2():
     return iox2
 
 
-def _service_type(iox2):
+def _service_type(iox2: Any) -> Any:
     name = os.getenv("IOX2REDIS_SERVICE_TYPE", "ipc").lower()
     if name == "ipc":
         return iox2.ServiceType.Ipc
@@ -57,7 +58,7 @@ def _poll_ns(*, poll_ns: int | None, poll_ms: int | None) -> int:
     return DEFAULT_POLL_NS
 
 
-def _number_of_elements(obj) -> int | None:
+def _number_of_elements(obj: Any) -> int | None:
     header = getattr(obj, "header", None)
     header = header() if callable(header) else header
     number = getattr(header, "number_of_elements", None)
@@ -66,7 +67,7 @@ def _number_of_elements(obj) -> int | None:
     return int(number) if number is not None else None
 
 
-def slice_payload_to_bytes(obj) -> bytes:
+def slice_payload_to_bytes(obj: Any) -> bytes:
     """Read bytes from a payload-bearing iceoryx2 object.
 
     The Python bindings expose slices as either a Slice-like object with
@@ -90,7 +91,7 @@ def slice_payload_to_bytes(obj) -> bytes:
     return bytes(int(payload[i]) for i in range(n))
 
 
-def write_bytes_to_uninit(uninit, data: bytes):
+def write_bytes_to_uninit(uninit: Any, data: bytes) -> Any:
     payload = uninit.payload()
     if hasattr(payload, "as_ptr"):
         ctypes.memmove(payload.as_ptr(), data, len(data))
@@ -111,15 +112,15 @@ class Iox2RpcClient:
         timeout: float = 1.0,
         poll_ns: int | None = DEFAULT_POLL_NS,
         poll_ms: int | None = None,
-    ):
+    ) -> None:
         self.service_name = service_name_from_host(service_name)
         self.max_payload_size = max_payload_size
         self.timeout = timeout
         self.poll_ns = _poll_ns(poll_ns=poll_ns, poll_ms=poll_ms)
-        self._iox2 = None
-        self._node = None
-        self._service = None
-        self._client = None
+        self._iox2: Any | None = None
+        self._node: Any | None = None
+        self._service: Any | None = None
+        self._client: Any | None = None
 
     @property
     def is_open(self) -> bool:
@@ -190,14 +191,14 @@ class Iox2RpcServer:
         max_payload_size: int = 64 * 1024,
         poll_ns: int | None = DEFAULT_POLL_NS,
         poll_ms: int | None = None,
-    ):
+    ) -> None:
         self.service_name = service_name_from_host(service_name)
         self.max_payload_size = max_payload_size
         self.poll_ns = _poll_ns(poll_ns=poll_ns, poll_ms=poll_ms)
-        self._iox2 = None
-        self._node = None
-        self._service = None
-        self._server = None
+        self._iox2: Any | None = None
+        self._node: Any | None = None
+        self._service: Any | None = None
+        self._server: Any | None = None
 
     @property
     def is_open(self) -> bool:
