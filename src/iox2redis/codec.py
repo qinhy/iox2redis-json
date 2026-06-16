@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import struct
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any
 
 PROTOCOL_VERSION = 1
 MAGIC = b"IX2R"

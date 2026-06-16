@@ -13,7 +13,6 @@ import pytest
 from iox2redis import direct_redis_for
 from iox2redis.server import Iox2JsonServer
 
-
 BENCH_ROUNDS = int(os.getenv("IOX2REDIS_BENCH_ROUNDS", "1000"))
 BENCH_PAYLOAD_SIZE = int(os.getenv("IOX2REDIS_BENCH_PAYLOAD_SIZE", "256"))
 BENCH_POLL_NS = int(os.getenv("IOX2REDIS_BENCH_POLL_NS", "100_000"))
@@ -31,7 +30,7 @@ def iox2redis_host(request: pytest.FixtureRequest) -> Iterator[str]:
     if importlib.util.find_spec("iceoryx2") is None:
         _skip_or_fail(
             "iceoryx2 is not importable. Run `uv sync --dev`, then verify "
-            "with `uv run python -c \"import iceoryx2\"`.",
+            'with `uv run python -c "import iceoryx2"`.',
             request,
         )
 
@@ -61,7 +60,7 @@ def iox2redis_host(request: pytest.FixtureRequest) -> Iterator[str]:
 
         try:
             assert client.ping() is True
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             if not errors.empty():
                 exc = errors.get()
             _skip_or_fail(f"iox2redis server started, but PING failed: {exc!r}", request)

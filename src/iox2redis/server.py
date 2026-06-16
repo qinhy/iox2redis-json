@@ -220,9 +220,7 @@ class JsonStore:
         value = item.value if item.is_json else value_to_json_text(item.value)
         return ResponseFrame(
             "bulk",
-            json.dumps(value, separators=(",", ":"), ensure_ascii=False)
-            if item.is_json
-            else value,
+            json.dumps(value, separators=(",", ":"), ensure_ascii=False) if item.is_json else value,
         )
 
 

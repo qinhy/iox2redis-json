@@ -4,7 +4,6 @@ import importlib.util
 import os
 import queue
 import threading
-import time
 import uuid
 from collections.abc import Iterator
 
@@ -12,7 +11,6 @@ import pytest
 
 from iox2redis import redis_for
 from iox2redis.server import Iox2JsonServer
-
 
 BENCH_ROUNDS = int(os.getenv("IOX2REDIS_BENCH_ROUNDS", "1000"))
 BENCH_PAYLOAD_SIZE = int(os.getenv("IOX2REDIS_BENCH_PAYLOAD_SIZE", "256"))
@@ -31,7 +29,7 @@ def iox2redis_host(request: pytest.FixtureRequest) -> Iterator[str]:
     if importlib.util.find_spec("iceoryx2") is None:
         _skip_or_fail(
             "iceoryx2 is not importable. Run `uv sync --dev`, then verify "
-            "with `uv run python -c \"import iceoryx2\"`.",
+            'with `uv run python -c "import iceoryx2"`.',
             request,
         )
 
@@ -62,7 +60,7 @@ def iox2redis_host(request: pytest.FixtureRequest) -> Iterator[str]:
 
         try:
             assert client.ping() is True
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             if not errors.empty():
                 exc = errors.get()
             _skip_or_fail(
@@ -93,6 +91,7 @@ def client(iox2redis_host: str):
         yield client
     finally:
         client.close()
+
 
 @pytest.mark.iox2
 def test_benchmark_ping(client, benchmark):

@@ -18,7 +18,9 @@ def _import_redis():
     try:
         import redis
     except ImportError as exc:  # pragma: no cover - project dependency
-        raise ImportError("redis-py is required. Install with: python -m pip install redis") from exc
+        raise ImportError(
+            "redis-py is required. Install with: python -m pip install redis"
+        ) from exc
     return redis
 
 
@@ -119,7 +121,7 @@ class Iox2DirectClient:
             return None
         return json.loads(raw.decode("utf-8"))
 
-    def __enter__(self) -> "Iox2DirectClient":
+    def __enter__(self) -> Iox2DirectClient:
         return self
 
     def __exit__(self, *_exc_info: object) -> None:

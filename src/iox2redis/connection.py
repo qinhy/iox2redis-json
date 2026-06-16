@@ -8,12 +8,12 @@ from typing import Any
 from .codec import CodecError, decode_response, encode_command, response_to_redis_value
 from .transport import Iox2RpcClient, service_name_from_host
 
-
 try:
     import redis
     from redis.connection import Connection
     from redis.exceptions import ConnectionError as RedisConnectionError
-    from redis.exceptions import ResponseError, TimeoutError as RedisTimeoutError
+    from redis.exceptions import ResponseError
+    from redis.exceptions import TimeoutError as RedisTimeoutError
 except ImportError:  # pragma: no cover - redis-py is a project dependency
     redis = None
     Connection = object  # type: ignore[assignment,misc]
@@ -47,7 +47,7 @@ class Iox2Connection(Connection):  # type: ignore[misc]
         **kwargs: Any,
     ):
         if redis is None:  # pragma: no cover
-            raise ImportError("redis-py is required. Install with: python -m pip install redis")
+            raise ImportError("redis-py is required. ex: pip install redis")
         self.service_name = service_name_from_host(host)
         self.response_timeout = response_timeout
         self.max_payload_size = max_payload_size
