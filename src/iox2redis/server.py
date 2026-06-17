@@ -520,7 +520,9 @@ class Iox2JsonServer:
             return _wrong_args("KEYS")
         pattern = key_to_str(args[0])
         keys = list(
-            dict.fromkeys(self.store.matching_keys(pattern) + self.const_store.matching_keys(pattern))
+            dict.fromkeys(
+                self.store.matching_keys(pattern) + self.const_store.matching_keys(pattern)
+            )
         )
         return ResponseFrame("array", keys)
 
@@ -564,12 +566,11 @@ class Iox2JsonServer:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run a Redis-like JSON server over iceoryx2.")
-    parser.add_argument(
-        "service", help="iceoryx2 service path, e.g. /your/topic/to/iox2_server/"
-    )
+    parser.add_argument("service", help="iceoryx2 service path, e.g. /your/topic/to/iox2_server/")
     parser.add_argument(
         "--max-payload-size",
-        type=int,default=DEFAULT_MAX_PAYLOAD_SIZE,
+        type=int,
+        default=DEFAULT_MAX_PAYLOAD_SIZE,
         help=(
             "maximum request and response payload size "
             f"in bytes (default: {DEFAULT_MAX_PAYLOAD_SIZE})"
@@ -577,12 +578,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--poll-ns",
-        type=int,default=None,
+        type=int,
+        default=None,
         help=f"iceoryx2 wait duration in nanoseconds; defaults to {DEFAULT_POLL_NS}",
     )
     parser.add_argument(
         "--poll-ms",
-        type=int,default=None,
+        type=int,
+        default=None,
         help="legacy millisecond wait duration; ignored when --poll-ns is set",
     )
     return parser
@@ -593,8 +596,7 @@ def _print_server_started(server: Iox2JsonServer) -> None:
     lines = (
         f"[{info.name}] server started",
         f"  Service:            {info.service_path}",
-        "  Max payload size:   "
-        f"{info.max_payload_size_text} ({info.max_payload_size} bytes)",
+        f"  Max payload size:   {info.max_payload_size_text} ({info.max_payload_size} bytes)",
         f"  Poll interval:      {info.poll_text}",
         f"  Constant namespace: {info.const_key_prefix}* (write-once)",
         f"  Server information: {info.server_info_key}",
