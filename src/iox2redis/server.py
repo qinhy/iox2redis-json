@@ -6,10 +6,11 @@ import argparse
 import json
 import re
 import signal
+import sys
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from dataclasses import asdict, dataclass
+from typing import TYPE_CHECKING, Any, Final
 
 from .codec import (
     CodecError,
@@ -24,8 +25,82 @@ from .codec import (
 if TYPE_CHECKING:
     from .transport import Iox2RpcServer
 
+SERVER_NAME: Final = "iox2redis-json"
+DEFAULT_MAX_PAYLOAD_SIZE: Final = 64 * 1024
+DEFAULT_POLL_NS: Final = 100_000
+CONST_KEY_PREFIX: Final = "const:"
+SERVER_INFO_KEY: Final = "const:server_info"
+ROOT_PATHS: Final = frozenset({"$", "."})
 
-@dataclass
+
+def _error(message: str) -> ResponseFrame:
+    return ResponseFrame("error", message=message)
+
+
+def _wrong_args(command: str) -> ResponseFrame:
+    return _error(f"ERR wrong number of arguments for {command}")
+
+
+def _json_text(value: Any) -> str:
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+
+
+def _handle_payload(payload: bytes, handler: Callable[[CommandFrame], ResponseFrame]) -> bytes:
+    try:
+        response = handler(decode_command(payload))
+    except CodecError as exc:
+        response = _error(f"ERR codec {exc}")
+    except Exception as exc:  # noqa: BLE001
+        response = _error(f"ERR {type(exc).__name__}: {exc}")
+    return encode_response(response)
+
+
+def _format_bytes(size: int) -> str:
+    """Return a human-readable binary byte size."""
+    units = ("B", "KiB", "MiB", "GiB", "TiB")
+    value = float(size)
+    for unit in units:
+        if abs(value) < 1024.0 or unit == units[-1]:
+            return f"{int(value)} {unit}" if value.is_integer() else f"{value:.1f} {unit}"
+        value /= 1024.0
+    return f"{size} B"
+
+
+def _is_const_key(key: str) -> bool:
+    """Return whether a key belongs to the constant namespace."""
+    return key.startswith(CONST_KEY_PREFIX)
+
+
+@dataclass(frozen=True, slots=True)
+class ServerInfo:
+    """Immutable information describing the configured server."""
+
+    name: str
+    service_path: str
+    max_payload_size: int
+    max_payload_size_text: str
+    poll_value: int
+    poll_unit: str
+    poll_is_default: bool
+    const_key_prefix: str
+    server_info_key: str
+
+    @property
+    def poll_text(self) -> str:
+        suffix = " (default)" if self.poll_is_default else ""
+        return f"{self.poll_value} {self.poll_unit}{suffix}"
+
+    @property
+    def ready_message(self) -> str:
+        return f"IOX2REDIS_READY {self.service_path}"
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["poll_text"] = self.poll_text
+        return data
+
+
+@dataclass(slots=True)
 class StoredValue:
     value: Any
     expires_at: float | None = None
@@ -34,9 +109,7 @@ class StoredValue:
 
 def _compile_redis_glob(pattern: str) -> re.Pattern[str]:
     """Compile Redis-style glob syntax into a case-sensitive regex."""
-
-    parts = [r"\A"]
-    idx = 0
+    parts, idx = [r"\A"], 0
     while idx < len(pattern):
         char = pattern[idx]
         if char == "*":
@@ -60,8 +133,7 @@ def _compile_redis_glob(pattern: str) -> re.Pattern[str]:
             idx += 1
             continue
 
-        end = idx + 1
-        negated = False
+        end, negated = idx + 1, False
         if end < len(pattern) and pattern[end] in {"^", "!"}:
             negated = True
             end += 1
@@ -99,25 +171,17 @@ def _compile_redis_glob(pattern: str) -> re.Pattern[str]:
 
 
 class JsonStore:
-    """Small Redis-like in-memory store used by the demo server."""
+    """Small Redis-like in-memory store used by the server."""
 
     def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
         self._items: dict[str, StoredValue] = {}
         self._clock = clock
 
     def handle_payload(self, payload: bytes) -> bytes:
-        try:
-            command = decode_command(payload)
-            response = self.handle(command)
-        except CodecError as exc:
-            response = ResponseFrame("error", message=f"ERR codec {exc}")
-        except Exception as exc:  # noqa: BLE001 - returned to Redis client as ERR
-            response = ResponseFrame("error", message=f"ERR {type(exc).__name__}: {exc}")
-        return encode_response(response)
+        return _handle_payload(payload, self.handle)
 
     def handle(self, frame: CommandFrame) -> ResponseFrame:
-        cmd = frame.command.upper()
-        args = frame.args
+        cmd, args = frame.command.upper(), frame.args
         if cmd == "PING":
             return self._ping(args)
         if cmd == "SET":
@@ -136,7 +200,7 @@ class JsonStore:
             return self._json_set(args)
         if cmd == "JSON.GET":
             return self._json_get(args)
-        return ResponseFrame("error", message=f"ERR unsupported command {cmd}")
+        return _error(f"ERR unsupported command {cmd}")
 
     def _purge_if_expired(self, key: str) -> None:
         item = self._items.get(key)
@@ -147,25 +211,37 @@ class JsonStore:
         self._purge_if_expired(key)
         return self._items.get(key)
 
+    def key_exists(self, key: str) -> bool:
+        """Return whether a live key exists."""
+        return self._get_item(key) is not None
+
+    def value_for_mget(self, key: str) -> Any | None:
+        """Return a value using the same representation as MGET."""
+        item = self._get_item(key)
+        if item is None:
+            return None
+        return _json_text(item.value) if item.is_json else item.value
+
+    def matching_keys(self, pattern: str) -> list[str]:
+        """Return live keys matching a Redis-style glob."""
+        matcher = _compile_redis_glob(pattern)
+        for key in list(self._items):  # Purging mutates the dictionary.
+            self._purge_if_expired(key)
+        return [key for key in self._items if matcher.fullmatch(key)]
+
     def _ping(self, args: list[Any]) -> ResponseFrame:
-        if not args:
-            return ResponseFrame("pong")
-        return ResponseFrame("bulk", args[0])
+        return ResponseFrame("pong") if not args else ResponseFrame("bulk", args[0])
 
     def _set(self, args: list[Any]) -> ResponseFrame:
         if len(args) < 2:
-            return ResponseFrame("error", message="ERR wrong number of arguments for SET")
+            return _wrong_args("SET")
 
-        key = key_to_str(args[0])
-        value = args[1]
+        key, value = key_to_str(args[0]), args[1]
         old = self._get_item(key)
-
         expires_at: float | None = None
-        nx = False
-        xx = False
-        get_old = False
-
+        nx = xx = get_old = False
         idx = 2
+
         while idx < len(args):
             opt = key_to_str(args[idx]).upper()
             if opt == "EX" and idx + 1 < len(args):
@@ -175,21 +251,18 @@ class JsonStore:
                 expires_at = self._clock() + float(key_to_str(args[idx + 1])) / 1000.0
                 idx += 2
             elif opt == "NX":
-                nx = True
-                idx += 1
+                nx, idx = True, idx + 1
             elif opt == "XX":
-                xx = True
-                idx += 1
+                xx, idx = True, idx + 1
             elif opt == "GET":
-                get_old = True
-                idx += 1
+                get_old, idx = True, idx + 1
             else:
-                return ResponseFrame("error", message=f"ERR unsupported SET option {opt}")
+                return _error(f"ERR unsupported SET option {opt}")
 
+        if nx and xx:
+            return _error("ERR NX and XX options are mutually exclusive")
         exists = old is not None
-        if nx and exists:
-            return ResponseFrame("nil")
-        if xx and not exists:
+        if (nx and exists) or (xx and not exists):
             return ResponseFrame("nil")
 
         self._items[key] = StoredValue(value=value, expires_at=expires_at, is_json=False)
@@ -199,17 +272,11 @@ class JsonStore:
 
     def _get(self, args: list[Any]) -> ResponseFrame:
         if len(args) != 1:
-            return ResponseFrame("error", message="ERR wrong number of arguments for GET")
-        key = key_to_str(args[0])
-        item = self._get_item(key)
+            return _wrong_args("GET")
+        item = self._get_item(key_to_str(args[0]))
         if item is None:
             return ResponseFrame("nil")
-        if item.is_json:
-            return ResponseFrame(
-                "bulk",
-                json.dumps(item.value, separators=(",", ":"), ensure_ascii=False),
-            )
-        return ResponseFrame("bulk", item.value)
+        return ResponseFrame("bulk", _json_text(item.value) if item.is_json else item.value)
 
     def _del(self, args: list[Any]) -> ResponseFrame:
         count = 0
@@ -224,51 +291,30 @@ class JsonStore:
     def _exists(self, args: list[Any]) -> ResponseFrame:
         count = 0
         for raw_key in args:
-            key = key_to_str(raw_key)
-            if self._get_item(key) is not None:
+            if self.key_exists(key_to_str(raw_key)):
                 count += 1
         return ResponseFrame("integer", count)
 
     def _mget(self, args: list[Any]) -> ResponseFrame:
-        values: list[Any | None] = []
-        for raw_key in args:
-            key = key_to_str(raw_key)
-            item = self._get_item(key)
-            if item is None:
-                values.append(None)
-            elif item.is_json:
-                values.append(json.dumps(item.value, separators=(",", ":"), ensure_ascii=False))
-            else:
-                values.append(item.value)
-        return ResponseFrame("array", values)
+        return ResponseFrame(
+            "array", [self.value_for_mget(key_to_str(raw_key)) for raw_key in args]
+        )
 
     def _keys(self, args: list[Any]) -> ResponseFrame:
         if len(args) != 1:
-            return ResponseFrame("error", message="ERR wrong number of arguments for KEYS")
-
-        pattern = key_to_str(args[0])
-        matcher = _compile_redis_glob(pattern)
-
-        # KEYS must not expose entries that have expired but have not yet been
-        # touched by another command. Iterate over a snapshot because purging
-        # mutates the backing dictionary.
-        for key in list(self._items):
-            self._purge_if_expired(key)
-
-        return ResponseFrame("array", [key for key in self._items if matcher.fullmatch(key)])
+            return _wrong_args("KEYS")
+        return ResponseFrame("array", self.matching_keys(key_to_str(args[0])))
 
     def _json_set(self, args: list[Any]) -> ResponseFrame:
         if len(args) < 3:
-            return ResponseFrame("error", message="ERR wrong number of arguments for JSON.SET")
+            return _wrong_args("JSON.SET")
 
-        key = key_to_str(args[0])
-        path = key_to_str(args[1])
-        if path not in {"$", "."}:
-            return ResponseFrame("error", message="ERR only root path '$' is supported")
+        key, path = key_to_str(args[0]), key_to_str(args[1])
+        if path not in ROOT_PATHS:
+            return _error("ERR only root path '$' is supported")
 
         old = self._get_item(key)
-        nx = False
-        xx = False
+        nx = xx = False
         idx = 3
         while idx < len(args):
             opt = key_to_str(args[idx]).upper()
@@ -277,77 +323,232 @@ class JsonStore:
             elif opt == "XX":
                 xx = True
             else:
-                return ResponseFrame("error", message=f"ERR unsupported JSON.SET option {opt}")
+                return _error(f"ERR unsupported JSON.SET option {opt}")
             idx += 1
 
-        if nx and old is not None:
-            return ResponseFrame("nil")
-        if xx and old is None:
+        if nx and xx:
+            return _error("ERR NX and XX options are mutually exclusive")
+        if (nx and old is not None) or (xx and old is None):
             return ResponseFrame("nil")
 
         try:
             value = json.loads(value_to_json_text(args[2]))
         except json.JSONDecodeError as exc:
-            return ResponseFrame("error", message=f"ERR invalid JSON: {exc.msg}")
+            return _error(f"ERR invalid JSON: {exc.msg}")
 
-        self._items[key] = StoredValue(value=value, is_json=True)
+        self._items[key] = StoredValue(value=value, expires_at=None, is_json=True)
         return ResponseFrame("simple", "OK")
 
     def _json_get(self, args: list[Any]) -> ResponseFrame:
-        if not (1 <= len(args) <= 2):
-            return ResponseFrame("error", message="ERR wrong number of arguments for JSON.GET")
+        if not 1 <= len(args) <= 2:
+            return _wrong_args("JSON.GET")
 
         key = key_to_str(args[0])
-        if len(args) == 2 and key_to_str(args[1]) not in {"$", "."}:
-            return ResponseFrame("error", message="ERR only root path '$' is supported")
+        if len(args) == 2 and key_to_str(args[1]) not in ROOT_PATHS:
+            return _error("ERR only root path '$' is supported")
 
         item = self._get_item(key)
         if item is None:
             return ResponseFrame("nil")
+        value = _json_text(item.value) if item.is_json else value_to_json_text(item.value)
+        return ResponseFrame("bulk", value)
 
-        value = item.value if item.is_json else value_to_json_text(item.value)
-        return ResponseFrame(
-            "bulk",
-            json.dumps(value, separators=(",", ":"), ensure_ascii=False) if item.is_json else value,
-        )
+
+class ConstJsonStore(JsonStore):
+    """Write-once store for keys in the reserved const: namespace."""
+
+    def initialize_json(self, key: str, value: Any) -> None:
+        """
+        Add a server-owned JSON constant.
+
+        This method is intended for initialization before requests are served.
+        """
+        self._validate_const_key(key)
+        if self.key_exists(key):
+            raise ValueError(f"constant key is already set: {key}")
+        self._items[key] = StoredValue(value=value, expires_at=None, is_json=True)
+
+    @staticmethod
+    def _validate_const_key(key: str) -> None:
+        if not _is_const_key(key):
+            raise ValueError(f"constant keys must start with {CONST_KEY_PREFIX!r}")
+
+    @staticmethod
+    def _const_key_error(key: str) -> ResponseFrame:
+        return _error(f"ERR constant key {key!r} is already set")
+
+    @staticmethod
+    def _const_prefix_error() -> ResponseFrame:
+        return _error(f"ERR constant key must start with {CONST_KEY_PREFIX!r}")
+
+    def _set(self, args: list[Any]) -> ResponseFrame:
+        if len(args) < 2:
+            return _wrong_args("SET")
+
+        key = key_to_str(args[0])
+        if not _is_const_key(key):
+            return self._const_prefix_error()
+        if self.key_exists(key):
+            return self._const_key_error(key)
+
+        idx = 2
+        while idx < len(args):
+            if key_to_str(args[idx]).upper() in {"EX", "PX"}:
+                return _error("ERR expiration is not allowed for constant keys")
+            idx += 1
+        return super()._set(args)
+
+    def _json_set(self, args: list[Any]) -> ResponseFrame:
+        if len(args) < 3:
+            return _wrong_args("JSON.SET")
+
+        key = key_to_str(args[0])
+        if not _is_const_key(key):
+            return self._const_prefix_error()
+        if self.key_exists(key):
+            return self._const_key_error(key)
+        return super()._json_set(args)
+
+    def _del(self, args: list[Any]) -> ResponseFrame:
+        return _error("ERR constant keys cannot be deleted")
 
 
 class Iox2JsonServer:
-    """iceoryx2 request-response server for JsonStore."""
+    """iceoryx2 request-response server for routed JSON stores."""
 
     def __init__(
         self,
         service_name: str,
         *,
-        max_payload_size: int = 64 * 1024,
+        max_payload_size: int = DEFAULT_MAX_PAYLOAD_SIZE,
         poll_ns: int | None = None,
         poll_ms: int | None = None,
         store: JsonStore | None = None,
+        const_store: ConstJsonStore | None = None,
     ) -> None:
-        self.service_name = service_name.strip("/")
+        normalized_service_name = service_name.strip("/")
+        if not normalized_service_name:
+            raise ValueError("service name must not be empty")
+        if max_payload_size <= 0:
+            raise ValueError("max_payload_size must be greater than zero")
+        if poll_ns is not None and poll_ns < 0:
+            raise ValueError("poll_ns must not be negative")
+        if poll_ms is not None and poll_ms < 0:
+            raise ValueError("poll_ms must not be negative")
+
+        self.service_name = normalized_service_name
         self.max_payload_size = max_payload_size
         self.poll_ns = poll_ns
         self.poll_ms = poll_ms
-        self.store = store or JsonStore()
+
+        if poll_ns is not None:
+            poll_value, poll_unit, poll_is_default = poll_ns, "ns", False
+        elif poll_ms is not None:
+            poll_value, poll_unit, poll_is_default = poll_ms, "ms", False
+        else:
+            poll_value, poll_unit, poll_is_default = DEFAULT_POLL_NS, "ns", True
+
+        self.info: Final[ServerInfo] = ServerInfo(
+            name=SERVER_NAME,
+            service_path=f"/{self.service_name}/",
+            max_payload_size=max_payload_size,
+            max_payload_size_text=_format_bytes(max_payload_size),
+            poll_value=poll_value,
+            poll_unit=poll_unit,
+            poll_is_default=poll_is_default,
+            const_key_prefix=CONST_KEY_PREFIX,
+            server_info_key=SERVER_INFO_KEY,
+        )
+        self.store: Final[JsonStore] = store or JsonStore()
+        self.const_store: Final[ConstJsonStore] = const_store or ConstJsonStore()
+
+        if self.const_store.key_exists(SERVER_INFO_KEY):
+            raise ValueError(f"{SERVER_INFO_KEY!r} is reserved by the server")
+        self.const_store.initialize_json(SERVER_INFO_KEY, self.info.to_dict())
+
         self._transport: Iox2RpcServer | None = None
         self._closed = False
+
+    def handle_payload(self, payload: bytes) -> bytes:
+        """Decode, route and encode one request."""
+        return _handle_payload(payload, self.handle)
+
+    def handle(self, frame: CommandFrame) -> ResponseFrame:
+        """Route a decoded command to the appropriate store."""
+        cmd, args = frame.command.upper(), frame.args
+        if cmd in {"GET", "SET", "JSON.GET", "JSON.SET"}:
+            if not args:
+                return self.store.handle(frame)
+            target = self.const_store if _is_const_key(key_to_str(args[0])) else self.store
+            return target.handle(frame)
+        if cmd == "DEL":
+            return self._routed_del(args)
+        if cmd == "EXISTS":
+            return self._routed_exists(args)
+        if cmd == "MGET":
+            return self._routed_mget(args)
+        if cmd == "KEYS":
+            return self._routed_keys(args)
+        return self.store.handle(frame)
+
+    def _store_for_key(self, key: str) -> JsonStore:
+        return self.const_store if _is_const_key(key) else self.store
+
+    def _routed_del(self, args: list[Any]) -> ResponseFrame:
+        keys = [key_to_str(raw_key) for raw_key in args]
+        if any(_is_const_key(key) for key in keys):
+            return _error("ERR constant keys cannot be deleted")
+        return self.store.handle(CommandFrame("DEL", args))
+
+    def _routed_exists(self, args: list[Any]) -> ResponseFrame:
+        count = 0
+        for raw_key in args:
+            key = key_to_str(raw_key)
+            if self._store_for_key(key).key_exists(key):
+                count += 1
+        return ResponseFrame("integer", count)
+
+    def _routed_mget(self, args: list[Any]) -> ResponseFrame:
+        values: list[Any | None] = []
+        for raw_key in args:
+            key = key_to_str(raw_key)
+            values.append(self._store_for_key(key).value_for_mget(key))
+        return ResponseFrame("array", values)
+
+    def _routed_keys(self, args: list[Any]) -> ResponseFrame:
+        if len(args) != 1:
+            return _wrong_args("KEYS")
+        pattern = key_to_str(args[0])
+        keys = list(
+            dict.fromkeys(self.store.matching_keys(pattern) + self.const_store.matching_keys(pattern))
+        )
+        return ResponseFrame("array", keys)
 
     def open(self) -> None:
         from .transport import Iox2RpcServer
 
-        if self._transport is None:
-            self._transport = Iox2RpcServer(
-                self.service_name,
-                max_payload_size=self.max_payload_size,
-                poll_ns=self.poll_ns,
-                poll_ms=self.poll_ms,
-            )
-            self._transport.open()
+        if self._closed or self._transport is not None:
+            return
+        transport = Iox2RpcServer(
+            self.service_name,
+            max_payload_size=self.max_payload_size,
+            poll_ns=self.poll_ns,
+            poll_ms=self.poll_ms,
+        )
+        try:
+            transport.open()
+        except Exception:
+            transport.close()
+            raise
+        self._transport = transport
 
     def serve_once(self) -> int:
+        if self._closed:
+            return 0
         self.open()
-        assert self._transport is not None
-        return self._transport.drain_requests(self.store.handle_payload)
+        if self._closed or self._transport is None:
+            return 0
+        return self._transport.drain_requests(self.handle_payload)
 
     def serve_forever(self) -> None:
         self.open()
@@ -363,21 +564,44 @@ class Iox2JsonServer:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run a Redis-like JSON server over iceoryx2.")
-    parser.add_argument("service", help="iceoryx2 service path, e.g. /your/topic/to/iox2_server/")
-    parser.add_argument("--max-payload-size", type=int, default=64 * 1024)
+    parser.add_argument(
+        "service", help="iceoryx2 service path, e.g. /your/topic/to/iox2_server/"
+    )
+    parser.add_argument(
+        "--max-payload-size",
+        type=int,default=DEFAULT_MAX_PAYLOAD_SIZE,
+        help=(
+            "maximum request and response payload size "
+            f"in bytes (default: {DEFAULT_MAX_PAYLOAD_SIZE})"
+        ),
+    )
     parser.add_argument(
         "--poll-ns",
-        type=int,
-        default=None,
-        help="iceoryx2 wait duration in nanoseconds; defaults to 100000",
+        type=int,default=None,
+        help=f"iceoryx2 wait duration in nanoseconds; defaults to {DEFAULT_POLL_NS}",
     )
     parser.add_argument(
         "--poll-ms",
-        type=int,
-        default=None,
-        help="legacy millisecond wait duration, ignored when --poll-ns is set",
+        type=int,default=None,
+        help="legacy millisecond wait duration; ignored when --poll-ns is set",
     )
     return parser
+
+
+def _print_server_started(server: Iox2JsonServer) -> None:
+    info = server.info
+    lines = (
+        f"[{info.name}] server started",
+        f"  Service:            {info.service_path}",
+        "  Max payload size:   "
+        f"{info.max_payload_size_text} ({info.max_payload_size} bytes)",
+        f"  Poll interval:      {info.poll_text}",
+        f"  Constant namespace: {info.const_key_prefix}* (write-once)",
+        f"  Server information: {info.server_info_key}",
+        info.ready_message,
+    )
+    for line in lines:
+        print(line, flush=True)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -388,19 +612,46 @@ def main(argv: list[str] | None = None) -> int:
         poll_ns=args.poll_ns,
         poll_ms=args.poll_ms,
     )
+    stopping = started = False
+    exit_code = 0
 
-    def _stop(_signum: int, _frame: Any) -> None:
+    def _stop(signum: int, _frame: Any) -> None:
+        nonlocal stopping
+        if stopping:
+            return
+        stopping = True
+        try:
+            signal_name = signal.Signals(signum).name
+        except ValueError:
+            signal_name = str(signum)
+        print(
+            f"\n[{server.info.name}] received {signal_name}; shutting down...",
+            flush=True,
+        )
         server.close()
 
     signal.signal(signal.SIGINT, _stop)
     signal.signal(signal.SIGTERM, _stop)
 
-    server.open()
-    print(f"iox2redis-json server listening on /{server.service_name}/", flush=True)
-    print(f"IOX2REDIS_READY {args.service}", flush=True)
-    server.serve_forever()
-    print("iox2redis-json server stopped")
-    return 0
+    try:
+        server.open()
+        started = True
+        _print_server_started(server)
+        server.serve_forever()
+    except KeyboardInterrupt:
+        server.close()
+    except Exception as exc:  # noqa: BLE001
+        exit_code = 1
+        print(
+            f"[{server.info.name}] server error: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+    finally:
+        server.close()
+        if started:
+            print(f"[{server.info.name}] server stopped", flush=True)
+    return exit_code
 
 
 if __name__ == "__main__":
