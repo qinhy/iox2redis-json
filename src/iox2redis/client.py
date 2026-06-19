@@ -66,6 +66,25 @@ class JsonHelpersMixin:
             raw = raw.decode("utf-8")
         return json.loads(raw)
 
+    def dump(self, key: str) -> bytes | None:
+        # DUMP is binary. With decode_responses=True, redis-py would normally
+        # decode the bulk response to str unless NEVER_DECODE is passed through.
+        value = self.execute_command("DUMP", key, NEVER_DECODE=True)
+        if isinstance(value, str):
+            return value.encode("utf-8")
+        if value is not None and not isinstance(value, bytes):
+            raise CodecError(f"DUMP returned non-bytes value: {type(value).__name__}")
+        return value
+
+
+    def load(self, key: str, payload: bytes, *, nx: bool = False, xx: bool = False) -> Any:
+        options: list[str] = []
+        if nx:
+            options.append("NX")
+        if xx:
+            options.append("XX")
+        return self.execute_command("LOAD", key, payload, *options)
+
 
 class Iox2DirectClient:
     """Direct iceoryx2 client that bypasses redis-py compatibility layers."""
@@ -131,6 +150,27 @@ class Iox2DirectClient:
         if raw is None:
             return None
         return json.loads(raw.decode("utf-8"))
+
+    def dump(self, key: bytes | str) -> bytes | None:
+        value = self.execute_command("DUMP", key)
+        if value is not None and not isinstance(value, bytes):
+            raise CodecError(f"DUMP returned non-bytes value: {type(value).__name__}")
+        return value
+
+    def load(
+        self,
+        key: bytes | str,
+        payload: bytes,
+        *,
+        nx: bool = False,
+        xx: bool = False,
+    ) -> bool:
+        options: list[str] = []
+        if nx:
+            options.append("NX")
+        if xx:
+            options.append("XX")
+        return bool(self.execute_command("LOAD", key, payload, *options) == b"OK")
 
     def __enter__(self) -> Iox2DirectClient:
         return self

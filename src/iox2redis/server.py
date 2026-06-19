@@ -17,6 +17,8 @@ from .codec import (
     CommandFrame,
     ResponseFrame,
     decode_command,
+    decode_json_value,
+    encode_json_value,
     encode_response,
     key_to_str,
     value_to_json_text,
@@ -31,6 +33,8 @@ DEFAULT_POLL_NS: Final = 100_000
 CONST_KEY_PREFIX: Final = "const:"
 SERVER_INFO_KEY: Final = "const:server_info"
 ROOT_PATHS: Final = frozenset({"$", "."})
+DUMP_MAGIC: Final = b"IX2D"
+DUMP_FORMAT_VERSION: Final = 1
 
 
 def _error(message: str) -> ResponseFrame:
@@ -69,6 +73,67 @@ def _format_bytes(size: int) -> str:
 def _is_const_key(key: str) -> bool:
     """Return whether a key belongs to the constant namespace."""
     return key.startswith(CONST_KEY_PREFIX)
+
+
+def _coerce_dump_payload(value: Any) -> bytes:
+    """Return bytes from a command argument used as a DUMP/LOAD payload."""
+
+    if isinstance(value, memoryview):
+        return value.tobytes()
+    if isinstance(value, bytearray):
+        return bytes(value)
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, str):
+        return value.encode("utf-8")
+    raise CodecError(f"dump payload must be bytes or str, got {type(value).__name__}")
+
+
+def _encode_dump_payload(item: StoredValue, now: float) -> bytes:
+    ttl_ms: int | None = None
+    if item.expires_at is not None:
+        ttl_ms = max(0, int(round((item.expires_at - now) * 1000)))
+
+    frame = {
+        "v": DUMP_FORMAT_VERSION,
+        "is_json": item.is_json,
+        "ttl_ms": ttl_ms,
+        "value": encode_json_value(item.value),
+    }
+    data = json.dumps(frame, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return DUMP_MAGIC + data
+
+
+def _decode_dump_payload(payload: Any, now: float) -> StoredValue:
+    raw = _coerce_dump_payload(payload)
+    if not raw.startswith(DUMP_MAGIC):
+        raise CodecError("invalid dump payload magic")
+
+    try:
+        frame = json.loads(raw[len(DUMP_MAGIC) :].decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        raise CodecError(f"invalid dump payload: {exc}") from exc
+
+    if frame.get("v") != DUMP_FORMAT_VERSION:
+        raise CodecError(f"unsupported dump format version: {frame.get('v')!r}")
+
+    is_json = frame.get("is_json")
+    if not isinstance(is_json, bool):
+        raise CodecError("dump payload is missing boolean is_json")
+
+    ttl_ms = frame.get("ttl_ms")
+    if ttl_ms is None:
+        expires_at = None
+    elif not isinstance(ttl_ms, bool) and isinstance(ttl_ms, (int, float)) and ttl_ms >= 0:
+        expires_at = now + (float(ttl_ms) / 1000.0)
+    else:
+        raise CodecError("dump payload ttl_ms must be null or non-negative number")
+
+    try:
+        value = decode_json_value(frame["value"])
+    except KeyError as exc:
+        raise CodecError("dump payload is missing value") from exc
+    return StoredValue(value=value, expires_at=expires_at, is_json=is_json)
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,6 +261,10 @@ class JsonStore:
             return self._mget(args)
         if cmd == "KEYS":
             return self._keys(args)
+        if cmd == "DUMP":
+            return self._dump(args)
+        if cmd == "LOAD":
+            return self._load(args)
         if cmd == "JSON.SET":
             return self._json_set(args)
         if cmd == "JSON.GET":
@@ -305,6 +374,46 @@ class JsonStore:
             return _wrong_args("KEYS")
         return ResponseFrame("array", self.matching_keys(key_to_str(args[0])))
 
+    def _dump(self, args: list[Any]) -> ResponseFrame:
+        if len(args) != 1:
+            return _wrong_args("DUMP")
+
+        item = self._get_item(key_to_str(args[0]))
+        if item is None:
+            return ResponseFrame("nil")
+        return ResponseFrame("bulk", _encode_dump_payload(item, self._clock()))
+
+    def _load(self, args: list[Any]) -> ResponseFrame:
+        if len(args) < 2:
+            return _wrong_args("LOAD")
+
+        key = key_to_str(args[0])
+        old = self._get_item(key)
+        nx = xx = False
+        idx = 2
+        while idx < len(args):
+            opt = key_to_str(args[idx]).upper()
+            if opt == "NX":
+                nx = True
+            elif opt == "XX":
+                xx = True
+            else:
+                return _error(f"ERR unsupported LOAD option {opt}")
+            idx += 1
+
+        if nx and xx:
+            return _error("ERR NX and XX options are mutually exclusive")
+        if (nx and old is not None) or (xx and old is None):
+            return ResponseFrame("nil")
+
+        try:
+            item = _decode_dump_payload(args[1], self._clock())
+        except CodecError as exc:
+            return _error(f"ERR invalid dump payload: {exc}")
+
+        self._items[key] = item
+        return ResponseFrame("simple", "OK")
+
     def _json_set(self, args: list[Any]) -> ResponseFrame:
         if len(args) < 3:
             return _wrong_args("JSON.SET")
@@ -412,6 +521,45 @@ class ConstJsonStore(JsonStore):
     def _del(self, args: list[Any]) -> ResponseFrame:
         return _error("ERR constant keys cannot be deleted")
 
+    def _load(self, args: list[Any]) -> ResponseFrame:
+        if len(args) < 2:
+            return _wrong_args("LOAD")
+
+        key = key_to_str(args[0])
+        if not _is_const_key(key):
+            return self._const_prefix_error()
+
+        old = self._get_item(key)
+        nx = xx = False
+        idx = 2
+        while idx < len(args):
+            opt = key_to_str(args[idx]).upper()
+            if opt == "NX":
+                nx = True
+            elif opt == "XX":
+                xx = True
+            else:
+                return _error(f"ERR unsupported LOAD option {opt}")
+            idx += 1
+
+        if nx and xx:
+            return _error("ERR NX and XX options are mutually exclusive")
+        if old is not None:
+            return ResponseFrame("nil") if nx else self._const_key_error(key)
+        if xx:
+            return ResponseFrame("nil")
+
+        try:
+            item = _decode_dump_payload(args[1], self._clock())
+        except CodecError as exc:
+            return _error(f"ERR invalid dump payload: {exc}")
+
+        if item.expires_at is not None:
+            return _error("ERR expiration is not allowed for constant keys")
+
+        self._items[key] = item
+        return ResponseFrame("simple", "OK")
+
 
 class Iox2JsonServer:
     """iceoryx2 request-response server for routed JSON stores."""
@@ -476,7 +624,7 @@ class Iox2JsonServer:
     def handle(self, frame: CommandFrame) -> ResponseFrame:
         """Route a decoded command to the appropriate store."""
         cmd, args = frame.command.upper(), frame.args
-        if cmd in {"GET", "SET", "JSON.GET", "JSON.SET"}:
+        if cmd in {"GET", "SET", "JSON.GET", "JSON.SET", "DUMP", "LOAD"}:
             if not args:
                 return self.store.handle(frame)
             target = self.const_store if _is_const_key(key_to_str(args[0])) else self.store
