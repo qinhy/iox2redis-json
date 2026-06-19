@@ -76,7 +76,6 @@ class JsonHelpersMixin:
             raise CodecError(f"DUMP returned non-bytes value: {type(value).__name__}")
         return value
 
-
     def load(self, key: str, payload: bytes, *, nx: bool = False, xx: bool = False) -> Any:
         options: list[str] = []
         if nx:

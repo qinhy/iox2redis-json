@@ -117,7 +117,8 @@ def stop_child(child: Process, stop_event: Event) -> None:
 
 
 def print_startup_help(
-        service: str, conf_key: str, poll_seconds: float, step_seconds: float) -> None:
+    service: str, conf_key: str, poll_seconds: float, step_seconds: float
+) -> None:
     script = Path(sys.argv[0]).name or "config_hot_reload_demo_refactored.py"
     print(f"[main] running. service={service!r}, conf_key={conf_key!r}")
     print(f"[main] hot config poll interval: {poll_seconds}s, in child process")
@@ -185,7 +186,8 @@ def set_conf(service: str, conf_key: str, args: argparse.Namespace) -> int:
         next_conf = update
     else:
         current_conf = require_json_object(
-                        redis.get_json(conf_key), f"existing config at {conf_key!r}")
+            redis.get_json(conf_key), f"existing config at {conf_key!r}"
+        )
         next_conf = {**current_conf, **update}
 
     ok = redis.set_json(conf_key, next_conf)
@@ -224,8 +226,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     set_parser = subcommands.add_parser("set", parents=[shared], help="set config fields")
     set_parser.add_argument("--message", help="set conf['message']")
     set_parser.add_argument("--multiplier", type=int, help="set conf['multiplier']")
-    set_parser.add_argument("--conf",
-                            help="advanced: JSON object, for example: '{\"enabled\": true}'")
+    set_parser.add_argument(
+        "--conf", help="advanced: JSON object, for example: '{\"enabled\": true}'"
+    )
     set_parser.add_argument("--replace", action="store_true", help="replace instead of merge")
 
     enabled = set_parser.add_mutually_exclusive_group()

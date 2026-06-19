@@ -18,7 +18,7 @@ def main() -> int:
     res += "\nSET plain -> " + str(r.set("plain", "hello"))
     res += "\nGET plain -> " + str(r.get("plain"))
 
-    plain_dump:bytes = r.dump("plain")
+    plain_dump: bytes = r.dump("plain")
     res += "\nDUMP plain -> " + _dump_len(plain_dump)
     if plain_dump is not None:
         res += "\nLOAD plain:copy -> " + str(r.load("plain:copy", plain_dump))
