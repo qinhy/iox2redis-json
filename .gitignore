@@ -180,3 +180,4 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 examples/iox2redis-dump.json
+examples/iox2redis-store.json
