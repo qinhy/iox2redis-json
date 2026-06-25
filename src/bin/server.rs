@@ -14,6 +14,12 @@ enum TransportKind {
     Iox2,
 }
 
+#[cfg(feature = "iox2")]
+const DEFAULT_TRANSPORT: TransportKind = TransportKind::Iox2;
+
+#[cfg(not(feature = "iox2"))]
+const DEFAULT_TRANSPORT: TransportKind = TransportKind::Hex;
+
 #[derive(Parser, Debug)]
 #[command(about = "Run a Redis-like JSON server over iceoryx2-compatible request/response frames")]
 struct Args {
@@ -22,7 +28,7 @@ struct Args {
     service: String,
 
     /// Transport backend. `hex` reads hex frames from stdin and writes hex responses to stdout.
-    #[arg(long, value_enum, default_value_t = TransportKind::Hex)]
+    #[arg(long, value_enum, default_value_t = DEFAULT_TRANSPORT)]
     transport: TransportKind,
 
     /// Maximum request and response payload size in bytes.

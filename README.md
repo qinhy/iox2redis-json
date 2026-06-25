@@ -45,7 +45,7 @@ The default build does not require iceoryx2 and works offline once Rust dependen
 
 ## Run the hex stdio server
 
-The default transport is a deterministic hex-line transport. It reads one hex-encoded request frame per line from stdin and writes one hex-encoded response frame per line to stdout. Ctrl-C is handled gracefully; the server exits cleanly even while waiting for stdin, and stray malformed terminal input is ignored with a warning instead of becoming a process error.
+The featureless build defaults to a deterministic hex-line transport. It reads one hex-encoded request frame per line from stdin and writes one hex-encoded response frame per line to stdout. Ctrl-C is handled gracefully; the server exits cleanly even while waiting for stdin, and stray malformed terminal input is ignored with a warning instead of becoming a process error.
 
 ```bash
 cargo run --bin iox2redis-server -- /redis/json
@@ -70,9 +70,11 @@ cargo run --bin iox2redis-client -- decode-response <HEX_RESPONSE>
 ## Run with iceoryx2
 
 ```bash
-cargo run --features iox2 --bin iox2redis-server -- --transport iox2 /redis/json
+cargo run --features iox2 --bin iox2redis-server -- /redis/json
 cargo run --features iox2 --bin iox2redis-client -- --transport iox2 --service /redis/json ping
 ```
+
+When the server binary is built with `--features iox2`, `iox2` is its default transport. Pass `--transport hex` explicitly to use the hex stdio transport from an iox2-enabled server binary.
 
 The Rust adapter uses iceoryx2 dynamic byte slices with request/response payload type `[u8] -> [u8]`. Ctrl-C / SIGTERM during `Node::wait()` is treated as normal shutdown, including iceoryx2 `TerminationRequest` wait results.
 
