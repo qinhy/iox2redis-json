@@ -1,36 +1,50 @@
 # Architecture
 
-`iox2redis-json` uses redis-py's connection-class extension point.
+`iox2redis-json` is now a pure Rust crate with three layers:
 
-- `redis_for(host="localhost")` returns a normal redis-py TCP client.
-- `redis_for(host="/some/iox2/service/")` returns a redis-py client with an `Iox2Connection` connection pool.
+1. `codec` encodes and decodes request/response frames.
+2. `store` implements the in-memory Redis-like command subset.
+3. `transport` contains a tiny stdio demo transport and shared transport helpers.
 
-`Iox2Connection` does not speak RESP over a socket. Instead, it maps redis-py command arguments into a compact JSON command frame and sends that frame as a dynamic byte slice through an iceoryx2 request-response service.
+## Wire protocol
 
-## Why not patch redis-py host resolution?
+Binary frames begin with:
 
-A host string beginning with `/` is not a network host. It is an iceoryx2 service name. Keeping this behavior inside a custom `Connection` avoids surprising changes to normal redis-py TCP and Unix socket behavior.
-
-## Wire envelope
-
-Command frame:
-
-```json
-{"v":1,"command":"SET","args":[{"type":"str","data":"key"},{"type":"bytes","data":"dmFsdWU="}]}
+```text
+IX2R | version:u8 | frame_type:u8
 ```
 
-Response frame:
+Command frames then contain:
 
-```json
-{"v":1,"kind":"simple","value":"OK"}
+```text
+command_len:u16 | argc:u16 | command:utf8 | typed_arg...
 ```
 
-Kinds:
+Response frames contain:
 
-- `simple`
-- `bulk`
-- `integer`
-- `array`
-- `nil`
-- `pong`
-- `error`
+```text
+kind:u8 | payload
+```
+
+Supported value tags:
+
+* `0`: none
+* `1`: bytes with `u32` length prefix
+* `2`: UTF-8 string with `u32` length prefix
+* `3`: signed 64-bit integer
+
+Supported response kinds:
+
+* `simple`
+* `bulk`
+* `array`
+* `nil`
+* `error`
+* `integer`
+* `pong`
+
+## Store model
+
+`JsonStore` keeps a `HashMap<String, StoredValue>`. Values can be bytes, strings, integers, or JSON text. JSON commands intentionally support only the root paths `$` and `.`.
+
+The store is transport-agnostic: callers pass request bytes to `handle_payload()` and receive response bytes.

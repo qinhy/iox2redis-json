@@ -1,0 +1,19 @@
+[package]
+name = "iox2redis-json"
+version = "0.1.0"
+edition = "2021"
+description = "A small Redis-like JSON SET/GET store and binary request protocol implemented in pure Rust."
+license = "MIT"
+rust-version = "1.89"
+
+[lib]
+name = "iox2redis"
+path = "src/lib.rs"
+
+[[bin]]
+name = "iox2redis-server"
+path = "src/bin/iox2redis-server.rs"
+
+[[bin]]
+name = "iox2redis-client"
+path = "src/bin/iox2redis-client.rs"
