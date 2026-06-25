@@ -52,3 +52,35 @@ fn hex_digit(byte: u8) -> Result<u8, String> {
         _ => Err(format!("invalid hex digit: {}", byte as char)),
     }
 }
+
+#[cfg(feature = "iox2")]
+pub mod iox2 {
+    use crate::store::StoreError;
+
+    /// Placeholder for the native iceoryx2 request/response transport.
+    ///
+    /// The pure Rust core is ready to be embedded behind iceoryx2 by passing
+    /// request payload bytes into `JsonStore::handle_payload`. This repository
+    /// keeps the `iox2` feature explicit so the default build remains usable in
+    /// offline environments where Cargo cannot download the upstream crate.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Iox2TransportConfig {
+        pub service_name: String,
+        pub max_payload_size: usize,
+        pub poll_ns: u64,
+    }
+
+    impl Iox2TransportConfig {
+        pub fn new(service_name: impl Into<String>) -> Self {
+            Self {
+                service_name: super::service_name_from_host(&service_name.into()),
+                max_payload_size: 64 * 1024,
+                poll_ns: 100_000,
+            }
+        }
+    }
+
+    pub fn unavailable_error() -> StoreError {
+        StoreError::Io("native iceoryx2 adapter is not linked in this offline build; add the iceoryx2 crate and implement the request_response adapter behind the iox2 feature".to_owned())
+    }
+}

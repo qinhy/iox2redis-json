@@ -42,7 +42,7 @@ cargo test
 cargo build --release
 ```
 
-The project has no third-party Rust dependencies, so it builds without downloading crates.
+The default build has no third-party Rust dependencies, so it builds without downloading crates. The original Python project used iceoryx2 for IPC; this Rust rewrite keeps the core transport-agnostic and reserves an explicit `iox2` feature for the native iceoryx2 adapter so the crate can still be built and tested in offline environments.
 
 ## Demo transport
 
@@ -81,4 +81,4 @@ let frame = decode_response(&response)?;
 
 ## Transport note
 
-The previous Python implementation used the Python `iceoryx2` bindings directly. This rewrite keeps the Rust protocol and store independent of any specific transport. A native Rust iceoryx2 adapter can call `JsonStore::handle_payload()` with request bytes and send the returned response bytes.
+The previous Python implementation used the Python `iceoryx2` bindings directly. The Rust rewrite should still use iceoryx2 for production IPC, but the default crate keeps the protocol and store independent of any specific transport. The `iox2` feature now marks the intended native adapter boundary. A native Rust iceoryx2 adapter can call `JsonStore::handle_payload()` with request bytes and send the returned response bytes.

@@ -17,3 +17,7 @@ path = "src/bin/iox2redis-server.rs"
 [[bin]]
 name = "iox2redis-client"
 path = "src/bin/iox2redis-client.rs"
+
+[features]
+default = []
+iox2 = []

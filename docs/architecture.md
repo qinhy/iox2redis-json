@@ -48,3 +48,8 @@ Supported response kinds:
 `JsonStore` keeps a `HashMap<String, StoredValue>`. Values can be bytes, strings, integers, or JSON text. JSON commands intentionally support only the root paths `$` and `.`.
 
 The store is transport-agnostic: callers pass request bytes to `handle_payload()` and receive response bytes.
+
+
+## iceoryx2 dependency strategy
+
+The production transport for this project is still expected to be iceoryx2 request/response IPC. The pure Rust core intentionally keeps that dependency behind an explicit `iox2` feature boundary so codec and store tests can run without network access or platform-specific IPC setup. The adapter boundary is `JsonStore::handle_payload()`: an iceoryx2 server receives request bytes, passes them to the store, and sends the returned response bytes.
