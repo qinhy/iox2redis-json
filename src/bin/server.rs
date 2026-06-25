@@ -1,5 +1,7 @@
 use clap::{Parser, ValueEnum};
-use iox2redis_json::store::{ServerConfig, DEFAULT_MAX_PAYLOAD_SIZE, DEFAULT_POLL_NS};
+#[cfg(feature = "iox2")]
+use iox2redis_json::store::DEFAULT_POLL_NS;
+use iox2redis_json::store::{ServerConfig, DEFAULT_MAX_PAYLOAD_SIZE};
 use iox2redis_json::{transport, Iox2JsonServer, StoreError};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -71,6 +73,7 @@ fn print_started(server: &Iox2JsonServer) {
     let info = &server.info;
     eprintln!("[{}] server started", info.name);
     eprintln!("  Service:            {}", info.service_path);
+    eprintln!("  Iceoryx2 version:   {}", info.iceoryx2_version);
     eprintln!(
         "  Max payload size:   {} ({} bytes)",
         info.max_payload_size_text, info.max_payload_size

@@ -13,6 +13,10 @@ pub const DEFAULT_MAX_PAYLOAD_SIZE: usize = 64 * 1024;
 pub const DEFAULT_POLL_NS: u64 = 100_000;
 pub const CONST_KEY_PREFIX: &str = "const:";
 pub const SERVER_INFO_KEY: &str = "const:server_info";
+pub const ICEORYX2_VERSION: &str = match option_env!("IOX2REDIS_ICEORYX2_VERSION") {
+    Some(version) => version,
+    None => "unknown",
+};
 const DUMP_MAGIC: &[u8; 4] = b"IX2D";
 const DUMP_FORMAT_VERSION: u8 = 1;
 
@@ -46,6 +50,7 @@ pub struct ServerInfo {
     pub poll_value: u64,
     pub poll_unit: String,
     pub poll_is_default: bool,
+    pub iceoryx2_version: String,
     pub const_key_prefix: String,
     pub server_info_key: String,
     pub poll_text: String,
@@ -130,6 +135,7 @@ impl ServerConfig {
             poll_value,
             poll_unit,
             poll_is_default,
+            iceoryx2_version: ICEORYX2_VERSION.to_owned(),
             const_key_prefix: CONST_KEY_PREFIX.to_owned(),
             server_info_key: SERVER_INFO_KEY.to_owned(),
             poll_text,

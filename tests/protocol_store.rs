@@ -1,5 +1,5 @@
 use iox2redis_json::codec::{decode_command, decode_response, encode_command, ResponseKind, WireValue};
-use iox2redis_json::store::{Iox2JsonServer, ServerConfig};
+use iox2redis_json::store::{Iox2JsonServer, ServerConfig, ICEORYX2_VERSION};
 use serde_json::json;
 use std::thread;
 use std::time::Duration;
@@ -34,6 +34,8 @@ fn server_exposes_const_server_info() {
     assert_eq!(response.kind, ResponseKind::Bulk);
     let text = response.value.unwrap().as_lossy_key();
     assert!(text.contains("iox2redis-json"));
+    let info: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(info["iceoryx2_version"], ICEORYX2_VERSION);
 }
 
 #[test]
