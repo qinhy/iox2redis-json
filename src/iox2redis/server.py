@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import json
 import re
 import signal
@@ -35,6 +36,7 @@ SERVER_INFO_KEY: Final = "const:server_info"
 ROOT_PATHS: Final = frozenset({"$", "."})
 DUMP_MAGIC: Final = b"IX2D"
 DUMP_FORMAT_VERSION: Final = 1
+UNKNOWN_ICEORYX2_VERSION: Final = "unknown"
 
 
 def _error(message: str) -> ResponseFrame:
@@ -68,6 +70,13 @@ def _format_bytes(size: int) -> str:
             return f"{int(value)} {unit}" if value.is_integer() else f"{value:.1f} {unit}"
         value /= 1024.0
     return f"{size} B"
+
+
+def _iceoryx2_version() -> str:
+    try:
+        return importlib.metadata.version("iceoryx2")
+    except importlib.metadata.PackageNotFoundError:
+        return UNKNOWN_ICEORYX2_VERSION
 
 
 def _is_const_key(key: str) -> bool:
@@ -147,6 +156,7 @@ class ServerInfo:
     poll_value: int
     poll_unit: str
     poll_is_default: bool
+    iceoryx2_version: str
     const_key_prefix: str
     server_info_key: str
 
@@ -604,6 +614,7 @@ class Iox2JsonServer:
             poll_value=poll_value,
             poll_unit=poll_unit,
             poll_is_default=poll_is_default,
+            iceoryx2_version=_iceoryx2_version(),
             const_key_prefix=CONST_KEY_PREFIX,
             server_info_key=SERVER_INFO_KEY,
         )
@@ -744,6 +755,7 @@ def _print_server_started(server: Iox2JsonServer) -> None:
     lines = (
         f"[{info.name}] server started",
         f"  Service:            {info.service_path}",
+        f"  Iceoryx2 version:   {info.iceoryx2_version}",
         f"  Max payload size:   {info.max_payload_size_text} ({info.max_payload_size} bytes)",
         f"  Poll interval:      {info.poll_text}",
         f"  Constant namespace: {info.const_key_prefix}* (write-once)",
