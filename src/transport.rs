@@ -1,5 +1,11 @@
 use crate::store::StoreError;
 use std::io::{self, BufRead, Write};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+    Arc,
+};
+use std::time::Duration;
 
 pub fn service_name_from_host(host: &str) -> String {
     host.strip_prefix("iox2://")
@@ -38,19 +44,68 @@ fn hex_digit(byte: u8) -> Result<u8, String> {
     }
 }
 
-pub fn serve_hex_stdio<F>(mut handler: F) -> Result<(), StoreError>
+pub fn serve_hex_stdio<F>(handler: F) -> Result<(), StoreError>
 where
     F: FnMut(&[u8]) -> Result<Vec<u8>, StoreError>,
 {
-    let stdin = io::stdin();
+    serve_hex_stdio_until(Arc::new(AtomicBool::new(false)), handler)
+}
+
+/// Serve hex-encoded request frames from stdin until EOF or `stop` becomes true.
+///
+/// This function is intentionally tolerant of malformed interactive input: an
+/// invalid hex line is reported on stderr and ignored instead of crashing the
+/// whole process. That makes Ctrl-C / terminal shutdown paths graceful even when
+/// stray characters are left in the terminal buffer.
+pub fn serve_hex_stdio_until<F>(stop: Arc<AtomicBool>, mut handler: F) -> Result<(), StoreError>
+where
+    F: FnMut(&[u8]) -> Result<Vec<u8>, StoreError>,
+{
+    let (sender, receiver) = mpsc::channel::<Result<String, String>>();
+
+    std::thread::spawn(move || {
+        let stdin = io::stdin();
+        for line in stdin.lock().lines() {
+            if sender
+                .send(line.map_err(|error| error.to_string()))
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+
     let mut stdout = io::stdout();
-    for line in stdin.lock().lines() {
-        let line = line.map_err(|error| StoreError::Io(error.to_string()))?;
+    while !stop.load(Ordering::SeqCst) {
+        let line = match receiver.recv_timeout(Duration::from_millis(50)) {
+            Ok(Ok(line)) => line,
+            Ok(Err(error)) => {
+                if stop.load(Ordering::SeqCst) {
+                    break;
+                }
+                return Err(StoreError::Io(error));
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
+
+        if stop.load(Ordering::SeqCst) {
+            break;
+        }
+
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
         }
-        let request = decode_hex(trimmed).map_err(StoreError::Io)?;
+
+        let request = match decode_hex(trimmed) {
+            Ok(request) => request,
+            Err(error) => {
+                eprintln!("[iox2redis-json] ignoring invalid hex input: {error}");
+                continue;
+            }
+        };
+
         let response = handler(&request)?;
         writeln!(stdout, "{}", encode_hex(&response))
             .map_err(|error| StoreError::Io(error.to_string()))?;
@@ -85,7 +140,31 @@ pub mod iox2 {
     use super::{service_name_from_host, Iox2TransportConfig};
     use crate::store::StoreError;
     use iceoryx2::prelude::*;
+    use std::sync::Once;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
     use std::time::{Duration, Instant};
+
+    static CONFIGURE_LOGGING_ONCE: Once = Once::new();
+
+    fn configure_iox2_logging() {
+        // iceoryx2 does not automatically read IOX2_LOG_LEVEL just because the
+        // environment variable is set. Its FAQ says applications must call a
+        // log-level API first. Default to Error so normal server startup is
+        // quiet unless the user explicitly asks for a more verbose level.
+        CONFIGURE_LOGGING_ONCE.call_once(|| {
+            set_log_level_from_env_or(LogLevel::Error);
+        });
+    }
+
+    fn is_shutdown_wait_error(error: &impl std::fmt::Display) -> bool {
+        // iceoryx2 may return either of these when Ctrl-C/SIGINT interrupts
+        // Node::wait(). Treat both as normal graceful shutdown.
+        let text = error.to_string();
+        text.contains("TerminationRequest") || text.contains("Interrupt")
+    }
 
     /// One-shot iceoryx2 request/response client for dynamic byte slices.
     ///
@@ -109,6 +188,8 @@ pub mod iox2 {
                     payload.len(), self.config.max_payload_size
                 )));
             }
+
+            configure_iox2_logging();
 
             let service_name_string = service_name_from_host(&self.config.service_name);
             let service_name: ServiceName = service_name_string.as_str().try_into().map_err(|error| {
@@ -163,10 +244,19 @@ pub mod iox2 {
             Self { config }
         }
 
-        pub fn serve_forever<F>(&self, mut handler: F) -> Result<(), StoreError>
+        pub fn serve_forever<F>(&self, handler: F) -> Result<(), StoreError>
         where
             F: FnMut(&[u8]) -> Result<Vec<u8>, StoreError>,
         {
+            self.serve_until(Arc::new(AtomicBool::new(false)), handler)
+        }
+
+        pub fn serve_until<F>(&self, stop: Arc<AtomicBool>, mut handler: F) -> Result<(), StoreError>
+        where
+            F: FnMut(&[u8]) -> Result<Vec<u8>, StoreError>,
+        {
+            configure_iox2_logging();
+
             let service_name_string = service_name_from_host(&self.config.service_name);
             let service_name: ServiceName = service_name_string.as_str().try_into().map_err(|error| {
                 StoreError::Io(format!("invalid service name {service_name_string:?}: {error}"))
@@ -185,14 +275,23 @@ pub mod iox2 {
                 .create()
                 .map_err(|error| StoreError::Io(error.to_string()))?;
 
-            while node
-                .wait(Duration::from_nanos(self.config.poll_ns))
-                .is_ok()
-            {
-                while let Some(active_request) = server
-                    .receive()
-                    .map_err(|error| StoreError::Io(error.to_string()))?
-                {
+            while !stop.load(Ordering::SeqCst) {
+                if let Err(error) = node.wait(Duration::from_nanos(self.config.poll_ns)) {
+                    if stop.load(Ordering::SeqCst) || is_shutdown_wait_error(&error) {
+                        break;
+                    }
+                    return Err(StoreError::Io(error.to_string()));
+                }
+
+                while !stop.load(Ordering::SeqCst) {
+                    let active_request = match server.receive() {
+                        Ok(Some(active_request)) => active_request,
+                        Ok(None) => break,
+                        Err(error) if stop.load(Ordering::SeqCst) || is_shutdown_wait_error(&error) => {
+                            return Ok(());
+                        }
+                        Err(error) => return Err(StoreError::Io(error.to_string())),
+                    };
                     let response_bytes = handler(active_request.payload())?;
                     if response_bytes.len() > self.config.max_payload_size {
                         return Err(StoreError::Io(format!(

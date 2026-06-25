@@ -53,14 +53,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
 
     let result = match args.transport {
-        TransportKind::Hex => transport::serve_hex_stdio(|payload| server.handle_payload(payload)),
-        TransportKind::Iox2 => serve_iox2(server),
+        TransportKind::Hex => {
+            transport::serve_hex_stdio_until(stopping.clone(), |payload| server.handle_payload(payload))
+        }
+        TransportKind::Iox2 => serve_iox2(server, stopping.clone()),
     };
 
+    eprintln!("[{}] server stopped", iox2redis_json::store::SERVER_NAME);
     if stopping.load(Ordering::SeqCst) {
-        eprintln!("[{}] server stopped", iox2redis_json::store::SERVER_NAME);
+        Ok(())
+    } else {
+        result.map_err(|error| -> Box<dyn std::error::Error> { Box::new(error) })
     }
-    result.map_err(|error| -> Box<dyn std::error::Error> { Box::new(error) })
 }
 
 fn print_started(server: &Iox2JsonServer) {
@@ -78,16 +82,16 @@ fn print_started(server: &Iox2JsonServer) {
 }
 
 #[cfg(feature = "iox2")]
-fn serve_iox2(mut server: Iox2JsonServer) -> Result<(), StoreError> {
+fn serve_iox2(mut server: Iox2JsonServer, stopping: Arc<AtomicBool>) -> Result<(), StoreError> {
     use iox2redis_json::transport::{iox2::Iox2RpcServer, Iox2TransportConfig};
     let mut transport_config = Iox2TransportConfig::new(server.config.service_name.clone());
     transport_config.max_payload_size = server.config.max_payload_size;
     transport_config.poll_ns = server.config.effective_poll_ns().max(DEFAULT_POLL_NS);
-    Iox2RpcServer::new(transport_config).serve_forever(|payload| server.handle_payload(payload))
+    Iox2RpcServer::new(transport_config).serve_until(stopping, |payload| server.handle_payload(payload))
 }
 
 #[cfg(not(feature = "iox2"))]
-fn serve_iox2(_server: Iox2JsonServer) -> Result<(), StoreError> {
+fn serve_iox2(_server: Iox2JsonServer, _stopping: Arc<AtomicBool>) -> Result<(), StoreError> {
     Err(StoreError::Io(
         "iox2 transport requested, but this binary was built without `--features iox2`".to_owned(),
     ))

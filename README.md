@@ -45,7 +45,7 @@ The default build does not require iceoryx2 and works offline once Rust dependen
 
 ## Run the hex stdio server
 
-The default transport is a deterministic hex-line transport. It reads one hex-encoded request frame per line from stdin and writes one hex-encoded response frame per line to stdout.
+The default transport is a deterministic hex-line transport. It reads one hex-encoded request frame per line from stdin and writes one hex-encoded response frame per line to stdout. Ctrl-C is handled gracefully; the server exits cleanly even while waiting for stdin, and stray malformed terminal input is ignored with a warning instead of becoming a process error.
 
 ```bash
 cargo run --bin iox2redis-server -- /redis/json
@@ -74,7 +74,7 @@ cargo run --features iox2 --bin iox2redis-server -- --transport iox2 /redis/json
 cargo run --features iox2 --bin iox2redis-client -- --transport iox2 --service /redis/json ping
 ```
 
-The Rust adapter uses iceoryx2 dynamic byte slices with request/response payload type `[u8] -> [u8]`.
+The Rust adapter uses iceoryx2 dynamic byte slices with request/response payload type `[u8] -> [u8]`. Ctrl-C / SIGTERM during `Node::wait()` is treated as normal shutdown, including iceoryx2 `TerminationRequest` wait results.
 
 ## Notes
 
@@ -82,3 +82,15 @@ The Rust adapter uses iceoryx2 dynamic byte slices with request/response payload
 - JSON paths other than `$` and `.` intentionally return an error, matching the Python demo behavior.
 - Pipelines and RESP command packing are intentionally not implemented.
 - I could not run `cargo check` in the current environment because Rust/Cargo is not installed here. The project is structured as a normal Cargo crate and includes tests for local validation.
+
+## Graceful iceoryx2 shutdown and log level notes
+
+The native iceoryx2 transport initializes the iceoryx2 log level before creating a node:
+
+```rust
+set_log_level_from_env_or(LogLevel::Error);
+```
+
+That means `IOX2_LOG_LEVEL` is honored when present, and the default is quiet (`Error`) instead of `Info`.
+
+`Ctrl-C` during `Node::wait()` may be reported by iceoryx2 as either `NodeWaitFailure::TerminationRequest` or `NodeWaitFailure::Interrupt`. Both are treated as normal shutdown and should not make the server exit with an error.
