@@ -40,3 +40,21 @@ fn array_response_round_trip() {
         vec![Some(WireValue::from("a")), None, Some(WireValue::from("c"))]
     );
 }
+
+#[test]
+fn json_tag_matches_original_python_wire_format() {
+    let payload = encode_command([
+        WireValue::from("JSON.SET"),
+        WireValue::from("doc"),
+        WireValue::from("$"),
+        WireValue::Json(r#"{"a":1}"#.to_owned()),
+    ])
+    .unwrap();
+    // magic + version + command frame + command_len + argc + "JSON.SET" + two string args
+    // The JSON payload argument must use tag 3 followed by a u32 length, matching Python codec.py.
+    assert!(payload
+        .windows(6)
+        .any(|window| window == [3, 0, 0, 0, 7, b'{']));
+    let frame = decode_command(&payload).unwrap();
+    assert_eq!(frame.args[2], WireValue::Json(r#"{"a":1}"#.to_owned()));
+}

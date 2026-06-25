@@ -7,7 +7,7 @@ const FRAME_RESPONSE: u8 = 2;
 const TAG_NONE: u8 = 0;
 const TAG_BYTES: u8 = 1;
 const TAG_STR: u8 = 2;
-const TAG_INT: u8 = 3;
+const TAG_JSON: u8 = 3;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum CodecError {
@@ -40,7 +40,8 @@ pub enum WireValue {
     None,
     Bytes(Vec<u8>),
     Str(String),
-    Int(i64),
+    /// Raw compact JSON text compatible with the original Python TAG_JSON value.
+    Json(String),
 }
 impl WireValue {
     pub fn as_lossy_key(&self) -> String {
@@ -48,7 +49,7 @@ impl WireValue {
             Self::None => String::new(),
             Self::Bytes(b) => String::from_utf8_lossy(b).into_owned(),
             Self::Str(s) => s.clone(),
-            Self::Int(i) => i.to_string(),
+            Self::Json(json) => json.clone(),
         }
     }
     pub fn to_bytes(&self) -> Option<Vec<u8>> {
@@ -56,7 +57,7 @@ impl WireValue {
             Self::None => None,
             Self::Bytes(b) => Some(b.clone()),
             Self::Str(s) => Some(s.as_bytes().to_vec()),
-            Self::Int(i) => Some(i.to_string().into_bytes()),
+            Self::Json(json) => Some(json.as_bytes().to_vec()),
         }
     }
 }
@@ -82,12 +83,12 @@ impl From<Vec<u8>> for WireValue {
 }
 impl From<i64> for WireValue {
     fn from(v: i64) -> Self {
-        Self::Int(v)
+        Self::Json(v.to_string())
     }
 }
 impl From<i32> for WireValue {
     fn from(v: i32) -> Self {
-        Self::Int(v as i64)
+        Self::Json((v as i64).to_string())
     }
 }
 
@@ -157,7 +158,7 @@ impl ResponseFrame {
     pub fn integer(value: i64) -> Self {
         Self {
             kind: ResponseKind::Integer,
-            value: Some(WireValue::Int(value)),
+            value: Some(WireValue::Json(value.to_string())),
             array: vec![],
             message: None,
         }
@@ -334,9 +335,9 @@ fn encode_value(out: &mut Vec<u8>, value: &WireValue) {
             out.push(TAG_STR);
             pack(out, s.as_bytes());
         }
-        WireValue::Int(i) => {
-            out.push(TAG_INT);
-            out.extend_from_slice(&i.to_be_bytes());
+        WireValue::Json(json) => {
+            out.push(TAG_JSON);
+            pack(out, json.as_bytes());
         }
     }
 }
@@ -347,12 +348,9 @@ fn decode_value(c: &mut Cursor<'_>) -> Result<WireValue, CodecError> {
         TAG_STR => Ok(WireValue::Str(String::from_utf8(
             c.len_prefixed()?.to_vec(),
         )?)),
-        TAG_INT => {
-            let b = c.bytes(8)?;
-            Ok(WireValue::Int(i64::from_be_bytes([
-                b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-            ])))
-        }
+        TAG_JSON => Ok(WireValue::Json(String::from_utf8(
+            c.len_prefixed()?.to_vec(),
+        )?)),
         other => Err(CodecError::UnknownValueTag(other)),
     }
 }

@@ -31,7 +31,7 @@ Supported value tags:
 * `0`: none
 * `1`: bytes with `u32` length prefix
 * `2`: UTF-8 string with `u32` length prefix
-* `3`: signed 64-bit integer
+* `3`: JSON text with `u32` length prefix, matching the original Python `TAG_JSON` encoding
 
 Supported response kinds:
 
@@ -45,7 +45,7 @@ Supported response kinds:
 
 ## Store model
 
-`JsonStore` keeps a `HashMap<String, StoredValue>`. Values can be bytes, strings, integers, or JSON text. JSON commands intentionally support only the root paths `$` and `.`.
+`JsonStore` keeps a `HashMap<String, StoredValue>`. Values can be bytes, strings, or JSON text. JSON commands intentionally support only the root paths `$` and `.`.
 
 The store is transport-agnostic: callers pass request bytes to `handle_payload()` and receive response bytes.
 
@@ -53,3 +53,8 @@ The store is transport-agnostic: callers pass request bytes to `handle_payload()
 ## iceoryx2 dependency strategy
 
 The production transport for this project is still expected to be iceoryx2 request/response IPC. The pure Rust core intentionally keeps that dependency behind an explicit `iox2` feature boundary so codec and store tests can run without network access or platform-specific IPC setup. The adapter boundary is `JsonStore::handle_payload()`: an iceoryx2 server receives request bytes, passes them to the store, and sends the returned response bytes.
+
+
+## Python client compatibility
+
+The Rust wire codec is intentionally compatible with the original Python client codec. Python clients send binary `IX2R` command frames over iceoryx2; a production Rust server should receive those bytes, call `JsonStore::handle_payload()`, and send the returned `IX2R` response bytes. DUMP/LOAD payloads use the original `IX2D` JSON envelope so Python clients can continue to use `dump()` and `load()`.

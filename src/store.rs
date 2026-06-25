@@ -311,7 +311,7 @@ fn json_text_value(value: &WireValue) -> WireValue {
     match value {
         WireValue::Str(s) => WireValue::Str(s.clone()),
         WireValue::Bytes(b) => WireValue::Str(String::from_utf8_lossy(b).into_owned()),
-        WireValue::Int(i) => WireValue::Str(i.to_string()),
+        WireValue::Json(json) => WireValue::Str(json.clone()),
         WireValue::None => WireValue::Str("null".into()),
     }
 }
@@ -346,30 +346,161 @@ fn compact_json_text(text: &str) -> String {
 }
 fn encode_dump(item: &StoredValue) -> Vec<u8> {
     let mut out = DUMP_MAGIC.to_vec();
-    out.push(if item.is_json { 1 } else { 0 });
-    let data = item.value.to_bytes().unwrap_or_default();
-    out.extend_from_slice(&(data.len() as u32).to_be_bytes());
-    out.extend_from_slice(&data);
+    let (kind, data) = match &item.value {
+        WireValue::Bytes(bytes) => ("bytes", base64_encode(bytes)),
+        WireValue::Str(text) => ("str", json_escape(text)),
+        WireValue::Json(json) => ("json", json.clone()),
+        WireValue::None => ("json", "null".to_owned()),
+    };
+    let payload = if kind == "json" {
+        format!(
+            r#"{{"v":1,"is_json":{},"ttl_ms":null,"value":{{"type":"json","data":{}}}}}"#,
+            item.is_json, data
+        )
+    } else {
+        format!(
+            r#"{{"v":1,"is_json":{},"ttl_ms":null,"value":{{"type":"{}","data":"{}"}}}}"#,
+            item.is_json, kind, data
+        )
+    };
+    out.extend_from_slice(payload.as_bytes());
     out
 }
+
 fn decode_dump(payload: &[u8]) -> Option<StoredValue> {
-    if !payload.starts_with(DUMP_MAGIC) || payload.len() < 9 {
+    if !payload.starts_with(DUMP_MAGIC) {
         return None;
     }
-    let is_json = payload[4] == 1;
-    let len = u32::from_be_bytes([payload[5], payload[6], payload[7], payload[8]]) as usize;
-    if payload.len() != 9 + len {
+    let text = std::str::from_utf8(&payload[DUMP_MAGIC.len()..]).ok()?;
+    let is_json = text.contains(r#""is_json":true"#);
+    let value = if text.contains(r#""type":"bytes""#) {
+        WireValue::Bytes(base64_decode(&extract_json_string_field(text, "data")?).ok()?)
+    } else if text.contains(r#""type":"str""#) {
+        WireValue::Str(extract_json_string_field(text, "data")?)
+    } else if text.contains(r#""type":"json""#) {
+        WireValue::Json(extract_json_data_value(text)?)
+    } else {
         return None;
-    }
+    };
     Some(StoredValue {
-        value: if is_json {
-            WireValue::Str(String::from_utf8_lossy(&payload[9..]).into_owned())
-        } else {
-            WireValue::Bytes(payload[9..].to_vec())
-        },
+        value,
         expires_at: None,
         is_json,
     })
+}
+
+fn json_escape(text: &str) -> String {
+    let mut out = String::new();
+    for ch in text.chars() {
+        match ch {
+            '"' => out.push_str(r#"\""#),
+            '\\' => out.push_str(r#"\\"#),
+            '\n' => out.push_str(r#"\n"#),
+            '\r' => out.push_str(r#"\r"#),
+            '\t' => out.push_str(r#"\t"#),
+            c if c.is_control() => out.push_str(&format!(r#"\u{:04x}"#, c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+fn extract_json_string_field(text: &str, field: &str) -> Option<String> {
+    let marker = format!(r#""{field}":"#);
+    let start = text.find(&marker)? + marker.len();
+    let bytes = text.as_bytes();
+    if bytes.get(start) != Some(&b'"') {
+        return None;
+    }
+    let mut out = String::new();
+    let mut idx = start + 1;
+    while idx < bytes.len() {
+        match bytes[idx] {
+            b'"' => return Some(out),
+            b'\\' => {
+                idx += 1;
+                match *bytes.get(idx)? {
+                    b'"' => out.push('"'),
+                    b'\\' => out.push('\\'),
+                    b'/' => out.push('/'),
+                    b'n' => out.push('\n'),
+                    b'r' => out.push('\r'),
+                    b't' => out.push('\t'),
+                    other => out.push(other as char),
+                }
+            }
+            b => out.push(b as char),
+        }
+        idx += 1;
+    }
+    None
+}
+
+fn extract_json_data_value(text: &str) -> Option<String> {
+    let marker = r#""data":"#;
+    let start = text.find(marker)? + marker.len();
+    let end = text[start..].rfind("}}").map(|n| start + n)?;
+    Some(text[start..end].trim().to_owned())
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = *chunk.get(1).unwrap_or(&0);
+        let b2 = *chunk.get(2).unwrap_or(&0);
+        out.push(TABLE[(b0 >> 2) as usize] as char);
+        out.push(TABLE[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            TABLE[(((b1 & 0x0f) << 2) | (b2 >> 6)) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[(b2 & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+fn base64_decode(text: &str) -> Result<Vec<u8>, ()> {
+    let mut out = Vec::new();
+    let mut buf = [0u8; 4];
+    for chunk in text.as_bytes().chunks(4) {
+        if chunk.len() != 4 {
+            return Err(());
+        }
+        let mut pad = 0;
+        for (idx, &b) in chunk.iter().enumerate() {
+            if b == b'=' {
+                buf[idx] = 0;
+                pad += 1;
+            } else {
+                buf[idx] = base64_value(b).ok_or(())?;
+            }
+        }
+        out.push((buf[0] << 2) | (buf[1] >> 4));
+        if pad < 2 {
+            out.push((buf[1] << 4) | (buf[2] >> 2));
+        }
+        if pad < 1 {
+            out.push((buf[2] << 6) | buf[3]);
+        }
+    }
+    Ok(out)
+}
+fn base64_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
 }
 fn glob(pattern: &str, text: &str) -> bool {
     fn go(p: &[u8], t: &[u8]) -> bool {

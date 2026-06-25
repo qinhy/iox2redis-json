@@ -70,7 +70,7 @@ fn del_exists_mget() {
             vec!["EXISTS".into(), "a".into(), "b".into(), "c".into()]
         )
         .value,
-        Some(WireValue::Int(2))
+        Some(WireValue::Json("2".to_owned()))
     );
     assert_eq!(
         run(
@@ -86,6 +86,39 @@ fn del_exists_mget() {
             vec!["DEL".into(), "a".into(), "b".into(), "c".into()]
         )
         .value,
-        Some(WireValue::Int(2))
+        Some(WireValue::Json("2".to_owned()))
+    );
+}
+
+#[test]
+fn dump_format_is_python_compatible_json_envelope() {
+    let mut store = JsonStore::new();
+    run(
+        &mut store,
+        vec!["SET".into(), "plain".into(), "hello".into()],
+    );
+    let dump = run(&mut store, vec!["DUMP".into(), "plain".into()]);
+    let Some(WireValue::Bytes(payload)) = dump.value else {
+        panic!("expected dump bytes")
+    };
+    assert!(payload.starts_with(b"IX2D"));
+    let text = std::str::from_utf8(&payload[4..]).unwrap();
+    assert!(text.contains(r#""v":1"#));
+    assert!(text.contains(r#""is_json":false"#));
+    assert!(text.contains(r#""type":"str"#));
+    assert!(text.contains(r#""data":"hello"#));
+
+    let mut restored = JsonStore::new();
+    assert_eq!(
+        run(
+            &mut restored,
+            vec!["LOAD".into(), "copy".into(), WireValue::Bytes(payload)]
+        )
+        .value,
+        Some("OK".into())
+    );
+    assert_eq!(
+        run(&mut restored, vec!["GET".into(), "copy".into()]).value,
+        Some("hello".into())
     );
 }
