@@ -1,70 +1,84 @@
-# iox2redis-json
+# iox2redis-json Rust full version
 
-A small Redis-like JSON key-value store rewritten in **pure Rust**.
+This is a full Rust rewrite of the uploaded Python `iox2redis-json` package, packaged as a Cargo project.
 
-The crate keeps the original project's focused command set and binary frame protocol, but removes the Python package, `redis-py` integration, and Python runtime dependencies. The core library is transport-agnostic and exposes a request handler that can be embedded behind an IPC transport.
+It keeps the same binary frame format (`IX2R`, protocol version `1`) and implements the same Redis-like command subset:
 
-## What is implemented
+- `PING`
+- `SET` with `EX`, `PX`, `NX`, `XX`, `GET`
+- `GET`
+- `DEL`
+- `EXISTS`
+- `MGET`
+- `KEYS` with Redis-style glob support: `*`, `?`, escapes, and character classes such as `[abc]` / `[!abc]`
+- `DUMP` / `LOAD` with TTL preservation
+- `JSON.SET` / `JSON.GET` for root paths `$` and `.`
+- `const:*` write-once namespace, including `const:server_info`
 
-* `PING`
-* `SET` / `GET`
-* `DEL` / `EXISTS` / `MGET` / `KEYS`
-* `JSON.SET` / `JSON.GET` with root paths `$` and `.`
-* `DUMP` / `LOAD` using a compact internal dump payload
-* Binary command and response frames with protocol magic `IX2R`, matching the original Python client wire format
+## What is improved compared with the previous loose `.rs` files
 
-This is intentionally not a full Redis server.
+The previous Rust version was a compact skeleton. This version adds:
 
-## Project layout
+- real JSON validation through `serde_json`
+- TTL-aware `DUMP` / `LOAD`
+- `const:*` routing and server metadata
+- legacy JSON frame decode fallback for compatibility
+- stronger CLI validation through `clap`
+- reusable direct-client abstractions
+- tests for protocol, TTL, const routing, and JSON behavior
+- graceful error messages instead of silent defaults
+- optional native iceoryx2 request/response transport behind `--features iox2`
 
-```text
-iox2redis-json/
-  Cargo.toml
-  src/
-    lib.rs
-    codec.rs
-    store.rs
-    transport.rs
-    bin/
-      iox2redis-server.rs
-      iox2redis-client.rs
-  tests/
-    codec.rs
-    store.rs
-  docs/
-    architecture.md
-```
-
-## Build and test
+## Build
 
 ```bash
-cargo test
-cargo build --release
+cargo build
 ```
 
-The default build has no third-party Rust dependencies, so it builds without downloading crates. The original Python project used iceoryx2 for IPC; this Rust rewrite keeps the core transport-agnostic and reserves an explicit `iox2` feature for the native iceoryx2 adapter so the crate can still be built and tested in offline environments.
+With native iceoryx2 transport:
 
-## Python client compatibility
-
-The Rust codec intentionally preserves the original Python binary wire format: magic `IX2R`, version `1`, typed values including Python-compatible JSON tag `3`, and the `IX2D` DUMP/LOAD envelope. Existing Python clients can connect to a Rust iceoryx2 request/response server as long as the server uses the same service name and passes request bytes into `JsonStore::handle_payload()`.
-
-## Embedding
-
-```rust
-use iox2redis::codec::{decode_response, encode_command, WireValue};
-use iox2redis::JsonStore;
-
-let mut store = JsonStore::new();
-let request = encode_command([
-    WireValue::from("SET"),
-    WireValue::from("plain"),
-    WireValue::from("hello"),
-])?;
-let response = store.handle_payload(&request)?;
-let frame = decode_response(&response)?;
-# Ok::<(), Box<dyn std::error::Error>>(())
+```bash
+cargo build --features iox2
 ```
 
-## Transport note
+The default build does not require iceoryx2 and works offline once Rust dependencies are available.
 
-The previous Python implementation used the Python `iceoryx2` bindings directly. The Rust rewrite should still use iceoryx2 for production IPC, but the default crate keeps the protocol and store independent of any specific transport. The `iox2` feature now marks the intended native adapter boundary. A native Rust iceoryx2 adapter can call `JsonStore::handle_payload()` with request bytes and send the returned response bytes.
+## Run the hex stdio server
+
+The default transport is a deterministic hex-line transport. It reads one hex-encoded request frame per line from stdin and writes one hex-encoded response frame per line to stdout.
+
+```bash
+cargo run --bin iox2redis-server -- /redis/json
+```
+
+Generate a request:
+
+```bash
+cargo run --bin iox2redis-client -- ping
+cargo run --bin iox2redis-client -- set hello world
+cargo run --bin iox2redis-client -- json-set user '{"name":"Ada"}'
+```
+
+Send the generated hex line to the server process to receive a hex response.
+
+Decode a response:
+
+```bash
+cargo run --bin iox2redis-client -- decode-response <HEX_RESPONSE>
+```
+
+## Run with iceoryx2
+
+```bash
+cargo run --features iox2 --bin iox2redis-server -- --transport iox2 /redis/json
+cargo run --features iox2 --bin iox2redis-client -- --transport iox2 --service /redis/json ping
+```
+
+The Rust adapter uses iceoryx2 dynamic byte slices with request/response payload type `[u8] -> [u8]`.
+
+## Notes
+
+- This is a Redis-like demo store, not a complete Redis server.
+- JSON paths other than `$` and `.` intentionally return an error, matching the Python demo behavior.
+- Pipelines and RESP command packing are intentionally not implemented.
+- I could not run `cargo check` in the current environment because Rust/Cargo is not installed here. The project is structured as a normal Cargo crate and includes tests for local validation.
