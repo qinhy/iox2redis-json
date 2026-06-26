@@ -79,7 +79,12 @@ fn print_started(server: &Iox2JsonServer) {
     let info = &server.info;
     eprintln!("[{}] server started", info.name);
     eprintln!("  Service:            {}", info.service_path);
+
+    #[cfg(feature = "iox2")]
     eprintln!("  Iceoryx2 version:   {}", info.iceoryx2_version);
+    #[cfg(not(feature = "iox2"))]
+    eprintln!("  Transport:          hex stdio");
+    
     eprintln!(
         "  Max payload size:   {} ({} bytes)",
         info.max_payload_size_text, info.max_payload_size
